@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { db } from '../lib/db';
+import BrandMark from '../components/BrandMark';
 
 export default function AuthPage() {
   const [email, setEmail] = useState('');
@@ -37,7 +38,9 @@ export default function AuthPage() {
   return (
     <div className="auth-page">
       <div className="auth-card">
-        <div className="brand-mark large">🤺</div>
+        <div className="brand-mark large">
+          <BrandMark size={40} />
+        </div>
         <h1>Fencing Vault</h1>
         <p className="muted">Upload bouts, break down every touch, track your game.</p>
 
