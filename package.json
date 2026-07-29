@@ -26,7 +26,9 @@
     "@capacitor/android": "^8.4.2",
     "@capacitor/core": "^8.4.2",
     "@capacitor/ios": "^8.4.2",
+    "@instantdb/admin": "^1.0.53",
     "@instantdb/react": "^1.0.52",
+    "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
@@ -37,6 +39,7 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^8.4.2",
+    "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.1",
