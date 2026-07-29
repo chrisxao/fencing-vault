@@ -5,6 +5,20 @@ import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
+const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const dummyStorageEnv = {
+  AWS_ENDPOINT_URL: 'https://storage-smoke.example.invalid',
+  AWS_S3_BUCKET_NAME: 'fencing-vault-smoke-test',
+  AWS_DEFAULT_REGION: 'auto',
+  AWS_ACCESS_KEY_ID: 'smoke-test-access-key',
+  AWS_SECRET_ACCESS_KEY: 'smoke-test-secret-key',
+  S3_ENDPOINT: '',
+  S3_BUCKET: '',
+  S3_REGION: '',
+  S3_ACCESS_KEY_ID: '',
+  S3_SECRET_ACCESS_KEY: '',
+  S3_FORCE_PATH_STYLE: 'false',
+};
 
 async function availablePort() {
   const server = net.createServer();
@@ -40,9 +54,62 @@ function assertContentType(response, expected) {
   assert.match(response.headers.get('content-type') ?? '', expected);
 }
 
+async function assertMissingStorageFailsFast() {
+  const port = await availablePort();
+  let output = '';
+  const child = spawn(npmCommand, ['start'], {
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      PORT: String(port),
+      VITE_INSTANT_APP_ID: '00000000-0000-4000-8000-000000000000',
+      INSTANT_APP_ADMIN_TOKEN: 'production-smoke-test-token',
+      ...Object.fromEntries(Object.keys(dummyStorageEnv).map((name) => [name, ''])),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.stdout.on('data', (chunk) => {
+    output += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    output += chunk;
+  });
+
+  let failFastTimer;
+  let exitCode;
+  try {
+    exitCode = await Promise.race([
+      once(child, 'exit').then(([code]) => code),
+      new Promise((_, reject) => {
+        failFastTimer = setTimeout(() => {
+          child.kill('SIGKILL');
+          reject(new Error(`Server did not fail fast without storage configuration.\n${output}`));
+        }, 3_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(failFastTimer);
+  }
+
+  assert.notEqual(exitCode, 0);
+  assert.match(output, /Missing required S3 configuration/);
+  for (const name of [
+    'AWS_ENDPOINT_URL',
+    'AWS_S3_BUCKET_NAME',
+    'AWS_DEFAULT_REGION',
+    'AWS_ACCESS_KEY_ID',
+    'AWS_SECRET_ACCESS_KEY',
+  ]) {
+    assert.match(output, new RegExp(name));
+  }
+  console.log('PASS missing storage configuration fails fast');
+}
+
+await assertMissingStorageFailsFast();
+
 const port = await availablePort();
 const baseUrl = `http://127.0.0.1:${port}`;
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 let output = '';
 const child = spawn(npmCommand, ['start'], {
   cwd: projectRoot,
@@ -53,6 +120,7 @@ const child = spawn(npmCommand, ['start'], {
     PORT: String(port),
     VITE_INSTANT_APP_ID: '00000000-0000-4000-8000-000000000000',
     INSTANT_APP_ADMIN_TOKEN: 'production-smoke-test-token',
+    ...dummyStorageEnv,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -70,8 +138,29 @@ try {
   const health = await fetch(`${baseUrl}/api/health`);
   assert.equal(health.status, 200);
   assertContentType(health, /application\/json/);
-  assert.equal((await health.json()).ok, true);
-  console.log('PASS /api/health returns JSON 200');
+  assert.deepEqual(await health.json(), { ok: true, storage: 's3' });
+  console.log('PASS /api/health reports S3 storage');
+
+  const presign = await fetch(`${baseUrl}/api/presign-upload`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ fileName: 'smoke-test.mp4', contentType: 'video/mp4' }),
+  });
+  assert.equal(presign.status, 200);
+  assertContentType(presign, /application\/json/);
+  const presignBody = await presign.json();
+  assert.match(presignBody.key, /^[a-f0-9-]{36}__smoke-test\.mp4$/);
+  assert.equal(presignBody.storage, 's3');
+  assert.match(presignBody.uploadUrl, /^https:\/\/.+\.example\.invalid\//);
+  console.log('PASS upload presign response matches web and mobile clients');
+
+  const playback = await fetch(
+    `${baseUrl}/api/playback-url?key=${encodeURIComponent(presignBody.key)}`,
+  );
+  assert.equal(playback.status, 200);
+  assertContentType(playback, /application\/json/);
+  assert.match((await playback.json()).url, /^https:\/\/.+\.example\.invalid\//);
+  console.log('PASS playback presign uses isolated dummy storage');
 
   for (const route of ['/', '/settings']) {
     const response = await fetch(`${baseUrl}${route}`);
@@ -86,6 +175,15 @@ try {
   assertContentType(missingApi, /application\/json/);
   assert.equal((await missingApi.json()).error, 'API route not found');
   console.log('PASS unknown /api route returns JSON 404');
+
+  for (const route of ['/api/local-upload/test', '/api/files/test']) {
+    const response = await fetch(`${baseUrl}${route}`, {
+      method: route.includes('upload') ? 'PUT' : 'GET',
+    });
+    assert.equal(response.status, 404);
+    assert.equal((await response.json()).error, 'API route not found');
+  }
+  console.log('PASS local upload and file routes are absent');
 
   const signin = await fetch(`${baseUrl}/api/auth/signin`, {
     method: 'POST',

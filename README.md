@@ -7,8 +7,7 @@ Runs as a React web app and an Expo React Native app for iOS and Android.
 
 - **Frontend**: React + TypeScript (Vite), Recharts
 - **Data & auth**: [InstantDB](https://instantdb.com) with email/password (custom auth via Admin SDK)
-- **Video storage**: any S3-compatible object storage (built for Railway buckets / MinIO), with a
-  local-disk fallback for development
+- **Video storage**: required S3-compatible object storage (built for Railway buckets / MinIO)
 - **Native**: Expo 57 + React Native, using the Expo managed workflow
 
 ## Features
@@ -51,8 +50,9 @@ Fill in `.env`:
 The existing `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, and
 `S3_SECRET_ACCESS_KEY` aliases remain supported for other S3-compatible providers.
 
-**No bucket yet?** Leave the bucket and credential variables empty and uploads are stored on local
-disk under `./uploads` — perfect for development.
+Video storage is required in local development as well as production. Configure all five storage
+values before starting the API; startup fails with a list of any missing variables. The server does
+not store uploads on local disk.
 
 #### Railway object storage
 
@@ -90,6 +90,9 @@ To verify the same production topology locally after building:
 npm run build
 npm run smoke:production
 ```
+
+The production smoke test supplies isolated dummy S3 values and only checks presigned URL
+generation; it never uploads to or downloads from a bucket.
 
 ### 2. Push the InstantDB schema (one-time, recommended)
 
