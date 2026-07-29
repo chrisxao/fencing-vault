@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { id, type User } from '@instantdb/react';
 import { db } from '../lib/db';
 import { uploadVideo } from '../lib/upload';
@@ -6,6 +6,11 @@ import { WEAPONS, type Weapon } from '../lib/labels';
 import { formatFileSize } from '../lib/format';
 
 export default function UploadModal({ user, onClose }: { user: User; onClose: () => void }) {
+  const { data: profileData } = db.useQuery({
+    profiles: { $: { where: { '$user.id': user.id } } },
+  });
+  const preferred = profileData?.profiles[0]?.defaultWeapon as Weapon | undefined;
+
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
   const [weapon, setWeapon] = useState<Weapon>('foil');
@@ -14,6 +19,12 @@ export default function UploadModal({ user, onClose }: { user: User; onClose: ()
   const [boutDate, setBoutDate] = useState('');
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (preferred && (preferred === 'foil' || preferred === 'epee' || preferred === 'sabre')) {
+      setWeapon(preferred);
+    }
+  }, [preferred]);
 
   function pickFile(f: File | null) {
     setFile(f);

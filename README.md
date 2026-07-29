@@ -7,7 +7,7 @@ Runs as a **web app**, **iOS / Android** (Capacitor), and **desktop** (Electron)
 codebase.
 
 - **Frontend**: React + TypeScript (Vite), Recharts
-- **Data & auth**: [InstantDB](https://instantdb.com) (magic-code email sign-in, realtime sync)
+- **Data & auth**: [InstantDB](https://instantdb.com) with email/password (custom auth via Admin SDK)
 - **Video storage**: any S3-compatible object storage (built for Railway buckets / MinIO), with a
   local-disk fallback for development
 - **Native**: Capacitor 8 (iOS + Android), Electron (macOS / Windows / Linux)
@@ -41,7 +41,7 @@ Fill in `.env`:
 | Variable | What it is |
 | --- | --- |
 | `VITE_INSTANT_APP_ID` | Public app ID from [instantdb.com](https://instantdb.com) |
-| `INSTANT_APP_ADMIN_TOKEN` | Secret admin token from the Instant dashboard (never commit) |
+| `INSTANT_APP_ADMIN_TOKEN` | Secret admin token — required for password auth (never commit) |
 | `VITE_API_URL` | Deployed upload API origin for mobile/desktop builds (empty = Vite `/api` proxy) |
 | `S3_ENDPOINT` | Endpoint URL of your Railway bucket (or any S3-compatible store) |
 | `S3_BUCKET` | Bucket name |
@@ -144,9 +144,12 @@ For **local device testing** against your laptop API:
 
 ## How data is modeled
 
+- `profiles` — display name, default weapon, linked 1:1 to the Instant user
+- `credentials` — password hashes (server/admin only; never exposed to the client)
 - `videos` — title, weapon, storage key, optional opponent/event/bout date
 - `segments` — one touch: `startTime`/`endTime` (seconds), general category, result, notes, linked labels
 - `comments` — linked to a segment (touch discussion) or to the video with a `timestamp` (frame comment)
 - `labels` — per-user action taxonomy; defaults are seeded on first sign-in, custom labels supported
 
-Permissions (`instant.perms.ts`) restrict every entity to its owner.
+Permissions (`instant.perms.ts`) restrict every entity to its owner. Password credentials are locked
+to admin-only access.

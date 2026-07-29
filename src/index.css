@@ -158,6 +158,47 @@ p { margin: 0.4em 0; }
 
 .topbar-right { display: flex; align-items: center; gap: 12px; }
 .user-email { color: var(--text-muted); font-size: 0.85rem; }
+.user-email:hover { color: var(--text); text-decoration: none; }
+
+.form-success { color: var(--green); font-size: 0.88rem; }
+
+.auth-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 22px 0 8px;
+  padding: 4px;
+  background: var(--bg-inset);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.auth-tab {
+  flex: 1;
+  font: inherit;
+  font-weight: 500;
+  font-size: 0.9rem;
+  padding: 7px 12px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.auth-tab.active {
+  background: var(--bg-card);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.settings-page { display: flex; flex-direction: column; gap: 18px; max-width: 640px; }
+.settings-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 20px 22px;
+}
+.settings-card h2 { margin-bottom: 0.4em; }
+.settings-card .modal-actions { justify-content: flex-start; margin-top: 8px; }
 
 .icon-btn {
   display: inline-flex;

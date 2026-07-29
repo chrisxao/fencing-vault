@@ -7,41 +7,59 @@ const _schema = i.schema({
     $users: i.entity({
       email: i.string().unique().indexed(),
     }),
+    // Display name + preferences. One profile per user.
+    profiles: i.entity({
+      name: i.string(),
+      defaultWeapon: i.string().optional(), // 'foil' | 'epee' | 'sabre'
+      createdAt: i.number(),
+      updatedAt: i.number(),
+    }),
+    // Password hashes — client access denied in instant.perms.ts; only the
+    // Express admin SDK reads/writes these.
+    credentials: i.entity({
+      email: i.string().unique().indexed(),
+      passwordHash: i.string(),
+      createdAt: i.number(),
+      updatedAt: i.number(),
+    }),
     videos: i.entity({
       title: i.string(),
       weapon: i.string(), // 'foil' | 'epee' | 'sabre'
       s3Key: i.string(),
       opponent: i.string().optional(),
       event: i.string().optional(),
-      boutDate: i.number().optional(), // ms timestamp of when the bout happened
-      duration: i.number().optional(), // seconds
+      boutDate: i.number().optional(),
+      duration: i.number().optional(),
       createdAt: i.number().indexed(),
     }),
-    // A "segment" is one touch/point of the bout, bounded by timestamps.
     segments: i.entity({
-      startTime: i.number(), // seconds into the video
+      startTime: i.number(),
       endTime: i.number(),
-      category: i.string().optional(), // general category id, see src/lib/labels.ts
-      result: i.string(), // 'scored' | 'received' | 'double' | 'simultaneous' | 'no-touch'
+      category: i.string().optional(),
+      result: i.string(),
       notes: i.string().optional(),
       createdAt: i.number(),
     }),
-    // Comments either belong to a segment (touch discussion) or carry a
-    // `timestamp` and belong directly to the video (frame comment).
     comments: i.entity({
       text: i.string(),
-      timestamp: i.number().optional(), // seconds; set for frame comments
+      timestamp: i.number().optional(),
       createdAt: i.number(),
     }),
-    // Specific action labels (parry riposte, counter attack, ...). Seed labels
-    // are created per-user on first login; users can add custom ones.
     labels: i.entity({
       name: i.string(),
-      category: i.string(), // suggested general category id
+      category: i.string(),
       isCustom: i.boolean(),
     }),
   },
   links: {
+    profileUser: {
+      forward: { on: 'profiles', has: 'one', label: '$user', onDelete: 'cascade' },
+      reverse: { on: '$users', has: 'one', label: 'profile' },
+    },
+    credentialUser: {
+      forward: { on: 'credentials', has: 'one', label: '$user', onDelete: 'cascade' },
+      reverse: { on: '$users', has: 'one', label: 'credential' },
+    },
     videoOwner: {
       forward: { on: 'videos', has: 'one', label: 'owner' },
       reverse: { on: '$users', has: 'many', label: 'videos' },

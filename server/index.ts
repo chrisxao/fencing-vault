@@ -12,6 +12,7 @@ import express from 'express';
 import cors from 'cors';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { registerAuthRoutes } from './auth-routes.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
@@ -30,7 +31,7 @@ const s3 = useS3
       region: REGION,
       credentials: { accessKeyId: ACCESS_KEY_ID!, secretAccessKey: SECRET_ACCESS_KEY! },
       // S3-compatible providers (Railway, MinIO) generally require
-      // path-style addressing rather than virtual-hosted buckets.
+      // path-style addressing rather than AWS virtual-hosted buckets.
       ...(ENDPOINT ? { endpoint: ENDPOINT, forcePathStyle: true } : {}),
     })
   : null;
@@ -38,6 +39,8 @@ const s3 = useS3
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+registerAuthRoutes(app);
 
 function sanitizeName(name: string): string {
   const base = path.basename(name).replace(/[^a-zA-Z0-9._-]/g, '_');
