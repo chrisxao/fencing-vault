@@ -1,15 +1,19 @@
 appId: com.fencingvault.app
 productName: Fencing Vault
+copyright: Copyright © Fencing Vault
 directories:
   output: release
 files:
   - dist/**
-  - electron/**
+  - electron/main.cjs
+extraMetadata:
+  main: electron/main.cjs
 mac:
   target:
     - dmg
     - zip
   category: public.app-category.sports
+  hardenedRuntime: true
 win:
   target:
     - nsis
@@ -17,3 +21,6 @@ linux:
   target:
     - AppImage
   category: Utility
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

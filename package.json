@@ -2,6 +2,8 @@
   "name": "fencing-vault",
   "private": true,
   "version": "0.1.0",
+  "description": "Video analysis for fencers — upload bouts, label touches, track your game",
+  "author": "Fencing Vault",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -10,11 +12,13 @@
     "dev:api": "node --watch server/index.ts",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "mobile:sync": "npm run build && cap sync",
-    "mobile:ios": "cap open ios",
-    "mobile:android": "cap open android",
-    "desktop:dev": "ELECTRON_START_URL=http://localhost:5173 electron .",
-    "desktop:build": "npm run build && electron-builder"
+    "mobile:sync": "npm run build && npx cap sync",
+    "mobile:ios": "npm run mobile:sync && npx cap open ios",
+    "mobile:android": "npm run mobile:sync && npx cap open android",
+    "desktop:dev": "concurrently -k -n web,api,desktop -c cyan,magenta,blue \"vite\" \"node --watch server/index.ts\" \"node electron/launch-dev.cjs\"",
+    "desktop:run": "npm run build && electron .",
+    "desktop:build": "npm run build && electron-builder --config electron-builder.yml",
+    "desktop:build:dir": "npm run build && electron-builder --config electron-builder.yml --dir"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1095.0",

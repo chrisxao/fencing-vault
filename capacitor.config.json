@@ -1,5 +1,15 @@
 {
   "appId": "com.fencingvault.app",
   "appName": "Fencing Vault",
-  "webDir": "dist"
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "ios": {
+    "contentInset": "automatic",
+    "preferredContentMode": "mobile"
+  },
+  "android": {
+    "allowMixedContent": true
+  }
 }
