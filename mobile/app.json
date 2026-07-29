@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "Fencing Vault",
+    "slug": "fencing-vault",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "fencingvault",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.fencingvault.app"
+    },
+    "android": {
+      "package": "com.fencingvault.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#f5f5f2",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-video"
+    ]
+  }
+}
