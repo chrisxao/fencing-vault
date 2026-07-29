@@ -1,8 +1,12 @@
+import BrandMark from './BrandMark';
+
 export default function SetupGuide() {
   return (
     <div className="setup-guide">
       <div className="setup-card">
-        <div className="brand-mark">🤺</div>
+        <div className="brand-mark large">
+          <BrandMark size={40} />
+        </div>
         <h1>Fencing Vault</h1>
         <p className="muted">Almost there — the app needs two things configured before first run.</p>
 

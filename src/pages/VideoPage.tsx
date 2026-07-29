@@ -76,6 +76,14 @@ function BoutAnalyzer({
       );
   }, [video.s3Key]);
 
+  // Pause playback whenever the touch editor is open.
+  useEffect(() => {
+    if (editing) {
+      playUntil.current = null;
+      videoRef.current?.pause();
+    }
+  }, [editing]);
+
   // Smooth playhead updates + auto-pause at the end of a touch being replayed.
   useEffect(() => {
     let raf = 0;
@@ -294,7 +302,7 @@ function BoutAnalyzer({
           <div className="mark-bar">
             {markStart === null ? (
               <button className="btn btn-accent" onClick={beginTouch}>
-                ⏱ Mark touch start at {formatTime(currentTime)}
+                Mark touch start at {formatTime(currentTime)}
               </button>
             ) : (
               <>
@@ -514,7 +522,7 @@ function TouchList({
             {s.notes && <p className="touch-notes">{s.notes}</p>}
             <div className="touch-actions">
               <button className="btn btn-ghost small" onClick={() => onPlay(s.startTime, s.endTime)}>
-                ▶ Replay
+                Replay
               </button>
               <button className="btn btn-ghost small" onClick={() => onEdit(s)}>
                 Edit
@@ -523,7 +531,7 @@ function TouchList({
                 className="btn btn-ghost small"
                 onClick={() => setExpanded(expanded === s.id ? null : s.id)}
               >
-                💬 {s.comments.length}
+                Comments ({s.comments.length})
               </button>
               <button className="btn btn-ghost small danger" onClick={() => onDelete(s.id)}>
                 Delete

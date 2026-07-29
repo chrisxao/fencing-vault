@@ -6,6 +6,7 @@ import { weaponName } from '../lib/labels';
 import { isScored, isReceived } from '../lib/stats';
 import { formatDate } from '../lib/format';
 import UploadModal from '../components/UploadModal';
+import BrandMark from '../components/BrandMark';
 
 export default function DashboardPage({ user }: { user: User }) {
   const [showUpload, setShowUpload] = useState(false);
@@ -51,7 +52,9 @@ export default function DashboardPage({ user }: { user: User }) {
 
       {videos.length === 0 ? (
         <div className="empty-state">
-          <div className="brand-mark large">🤺</div>
+          <div className="brand-mark large">
+            <BrandMark size={40} />
+          </div>
           <h2>No bouts yet</h2>
           <p className="muted">Upload your first fencing video to start breaking down touches.</p>
           <button className="btn btn-primary" onClick={() => setShowUpload(true)}>

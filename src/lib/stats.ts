@@ -128,7 +128,7 @@ export function labelBreakdown(data: TouchDatum[]): LabelStats[] {
     .map(([name, e]) => ({
       name,
       category: e.category,
-      color: categoryById(e.category)?.color ?? '#a3a3a3',
+      color: categoryById(e.category)?.color ?? '#8b8e97',
       scored: e.scored,
       received: e.received,
       total: e.total,

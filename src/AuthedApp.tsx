@@ -1,33 +1,66 @@
 import { useEffect, useRef } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+// HashRouter so routing works everywhere the app is packaged: file:// in
+// Electron and the Capacitor webview, with no server-side rewrites needed.
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { id, type User } from '@instantdb/react';
 import { db } from './lib/db';
-import { DEFAULT_LABELS } from './lib/labels';
+import { DEFAULT_LABELS, RETIRED_LABELS } from './lib/labels';
 import AuthPage from './pages/AuthPage';
 import DashboardPage from './pages/DashboardPage';
 import VideoPage from './pages/VideoPage';
 import StatsPage from './pages/StatsPage';
 import Layout from './components/Layout';
 
-/** Seeds the default label taxonomy for first-time users. */
+/**
+ * Keeps the user's default label taxonomy in sync with DEFAULT_LABELS:
+ * creates missing seed labels, fixes categories that moved, and migrates
+ * retired labels (re-linking their touches to a replacement when one exists).
+ * Custom labels are never touched.
+ */
 function LabelSeeder({ user }: { user: User }) {
   const { isLoading, data } = db.useQuery({
-    labels: { $: { where: { 'owner.id': user.id } } },
+    labels: { $: { where: { 'owner.id': user.id } }, segments: {} },
   });
-  const seeded = useRef(false);
+  const synced = useRef(false);
 
   useEffect(() => {
-    if (isLoading || seeded.current) return;
-    if (data && data.labels.length === 0) {
-      seeded.current = true;
-      db.transact(
-        DEFAULT_LABELS.map((l) =>
+    if (isLoading || !data || synced.current) return;
+    synced.current = true;
+
+    const defaults = data.labels.filter((l) => !l.isCustom);
+    const byName = new Map(defaults.map((l) => [l.name.toLowerCase(), l]));
+    const txs = [];
+
+    for (const def of DEFAULT_LABELS) {
+      const existing = byName.get(def.name.toLowerCase());
+      if (!existing) {
+        txs.push(
           db.tx.labels[id()]
-            .update({ name: l.name, category: l.category, isCustom: false })
+            .update({ name: def.name, category: def.category, isCustom: false })
             .link({ owner: user.id }),
-        ),
-      );
+        );
+      } else if (existing.category !== def.category) {
+        txs.push(db.tx.labels[existing.id].update({ category: def.category }));
+      }
     }
+
+    for (const retired of RETIRED_LABELS) {
+      const existing = byName.get(retired.name.toLowerCase());
+      if (!existing) continue;
+      const replacement = retired.replacedBy
+        ? byName.get(retired.replacedBy.toLowerCase())
+        : undefined;
+      if (replacement && existing.segments.length > 0) {
+        txs.push(
+          db.tx.labels[replacement.id].link({
+            segments: existing.segments.map((s) => s.id),
+          }),
+        );
+      }
+      txs.push(db.tx.labels[existing.id].delete());
+    }
+
+    if (txs.length > 0) db.transact(txs);
   }, [isLoading, data, user.id]);
 
   return null;
@@ -41,7 +74,7 @@ export default function AuthedApp() {
   if (!user) return <AuthPage />;
 
   return (
-    <BrowserRouter>
+    <HashRouter>
       <LabelSeeder user={user} />
       <Layout email={user.email ?? ''}>
         <Routes>
@@ -51,6 +84,6 @@ export default function AuthedApp() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>
-    </BrowserRouter>
+    </HashRouter>
   );
 }

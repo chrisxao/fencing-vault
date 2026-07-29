@@ -49,6 +49,13 @@ function isValidKey(key: string): boolean {
   return /^[a-f0-9-]{36}__[a-zA-Z0-9._-]+$/.test(key);
 }
 
+/** Absolute origin for local-disk URLs so Capacitor/Electron can fetch them. */
+function publicOrigin(req: express.Request): string {
+  const proto = String(req.headers['x-forwarded-proto'] ?? req.protocol);
+  const host = String(req.headers['x-forwarded-host'] ?? req.get('host') ?? `localhost:${PORT}`);
+  return `${proto}://${host}`;
+}
+
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, storage: useS3 ? 's3' : 'local' });
 });
@@ -74,7 +81,11 @@ app.post('/api/presign-upload', async (req, res) => {
       );
       res.json({ key, uploadUrl, storage: 's3' });
     } else {
-      res.json({ key, uploadUrl: `/api/local-upload/${key}`, storage: 'local' });
+      res.json({
+        key,
+        uploadUrl: `${publicOrigin(req)}/api/local-upload/${key}`,
+        storage: 'local',
+      });
     }
   } catch (err) {
     console.error('presign failed', err);
@@ -97,7 +108,7 @@ app.get('/api/playback-url', async (req, res) => {
       );
       res.json({ url });
     } else {
-      res.json({ url: `/api/files/${key}` });
+      res.json({ url: `${publicOrigin(req)}/api/files/${key}` });
     }
   } catch (err) {
     console.error('playback-url failed', err);
@@ -135,8 +146,8 @@ app.get('/api/files/:key', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`[api] listening on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[api] listening on http://0.0.0.0:${PORT}`);
   if (useS3) {
     console.log(`[api] storage: S3-compatible bucket "${BUCKET}"${ENDPOINT ? ` via ${ENDPOINT}` : ''}`);
   } else {

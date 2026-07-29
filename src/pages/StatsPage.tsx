@@ -21,6 +21,7 @@ import {
   YAxis,
 } from 'recharts';
 import { db } from '../lib/db';
+import { useTheme } from '../lib/theme';
 import { WEAPONS } from '../lib/labels';
 import {
   PERIODS,
@@ -42,14 +43,26 @@ const CHART_TYPES: { id: ChartType; name: string }[] = [
   { id: 'trend', name: 'Trend' },
 ];
 
-const TOOLTIP_STYLE = {
-  backgroundColor: '#1c1c22',
-  border: '1px solid #33333d',
-  borderRadius: 8,
-  color: '#e7e7ee',
-};
+function chartColors(dark: boolean) {
+  return {
+    grid: dark ? '#2a2c33' : '#d2d4db',
+    axis: dark ? '#94969f' : '#71717a',
+    cursor: dark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.04)',
+    tooltip: {
+      backgroundColor: dark ? '#17181d' : '#ffffff',
+      border: `1px solid ${dark ? '#2f323a' : '#e4e5ea'}`,
+      borderRadius: 10,
+      color: dark ? '#f0f0f3' : '#1d1d1f',
+      boxShadow: '0 8px 28px rgba(20, 24, 34, 0.16)',
+    },
+  };
+}
 
 export default function StatsPage({ user }: { user: User }) {
+  const { theme } = useTheme();
+  const { grid: GRID, axis: AXIS, cursor: CURSOR, tooltip: TOOLTIP_STYLE } = chartColors(
+    theme === 'dark',
+  );
   const [params, setParams] = useSearchParams();
   const [weapon, setWeapon] = useState('');
   const [period, setPeriod] = useState<Period>('all');
@@ -188,13 +201,13 @@ export default function StatsPage({ user }: { user: User }) {
               <ResponsiveContainer width="100%" height={340}>
                 {chart === 'bar' ? (
                   <BarChart data={withCategory}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#2a2a33" />
-                    <XAxis dataKey="short" stroke="#8b8b98" />
-                    <YAxis allowDecimals={false} stroke="#8b8b98" />
-                    <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#ffffff10' }} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={GRID} />
+                    <XAxis dataKey="short" stroke={AXIS} />
+                    <YAxis allowDecimals={false} stroke={AXIS} />
+                    <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: CURSOR }} />
                     <Legend />
-                    <Bar dataKey="scored" name="Scored" fill="#34d399" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="received" name="Received" fill="#f87171" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="scored" name="Scored" fill="#7fa48c" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="received" name="Received" fill="#bd847b" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 ) : chart === 'pie' ? (
                   <PieChart>
@@ -215,27 +228,27 @@ export default function StatsPage({ user }: { user: User }) {
                   </PieChart>
                 ) : chart === 'radar' ? (
                   <RadarChart data={withCategory}>
-                    <PolarGrid stroke="#2a2a33" />
-                    <PolarAngleAxis dataKey="short" stroke="#8b8b98" />
+                    <PolarGrid stroke={GRID} />
+                    <PolarAngleAxis dataKey="short" stroke={AXIS} />
                     <Tooltip contentStyle={TOOLTIP_STYLE} />
                     <Legend />
-                    <Radar name="Scored" dataKey="scored" stroke="#34d399" fill="#34d399" fillOpacity={0.35} />
-                    <Radar name="Received" dataKey="received" stroke="#f87171" fill="#f87171" fillOpacity={0.25} />
+                    <Radar name="Scored" dataKey="scored" stroke="#7fa48c" fill="#7fa48c" fillOpacity={0.35} />
+                    <Radar name="Received" dataKey="received" stroke="#bd847b" fill="#bd847b" fillOpacity={0.25} />
                   </RadarChart>
                 ) : (
                   <LineChart data={trend}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#2a2a33" />
-                    <XAxis dataKey="month" stroke="#8b8b98" />
-                    <YAxis allowDecimals={false} stroke="#8b8b98" />
+                    <CartesianGrid strokeDasharray="3 3" stroke={GRID} />
+                    <XAxis dataKey="month" stroke={AXIS} />
+                    <YAxis allowDecimals={false} stroke={AXIS} />
                     <Tooltip contentStyle={TOOLTIP_STYLE} />
                     <Legend />
-                    <Line type="monotone" dataKey="scored" name="Scored" stroke="#34d399" strokeWidth={2} />
-                    <Line type="monotone" dataKey="received" name="Received" stroke="#f87171" strokeWidth={2} />
+                    <Line type="monotone" dataKey="scored" name="Scored" stroke="#7fa48c" strokeWidth={2} />
+                    <Line type="monotone" dataKey="received" name="Received" stroke="#bd847b" strokeWidth={2} />
                     <Line
                       type="monotone"
                       dataKey="successRate"
                       name="Success %"
-                      stroke="#fbbf24"
+                      stroke="#b8a374"
                       strokeWidth={2}
                       strokeDasharray="6 3"
                     />
