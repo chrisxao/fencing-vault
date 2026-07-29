@@ -1,0 +1,19 @@
+appId: com.fencingvault.app
+productName: Fencing Vault
+directories:
+  output: release
+files:
+  - dist/**
+  - electron/**
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.sports
+win:
+  target:
+    - nsis
+linux:
+  target:
+    - AppImage
+  category: Utility

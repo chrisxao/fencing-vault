@@ -3,16 +3,25 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "concurrently -n web,api -c cyan,magenta \"vite\" \"node --watch server/index.ts\"",
     "dev:web": "vite",
     "dev:api": "node --watch server/index.ts",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "mobile:sync": "npm run build && cap sync",
+    "mobile:ios": "cap open ios",
+    "mobile:android": "cap open android",
+    "desktop:dev": "ELECTRON_START_URL=http://localhost:5173 electron .",
+    "desktop:build": "npm run build && electron-builder"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1095.0",
     "@aws-sdk/s3-request-presigner": "^3.1095.0",
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/ios": "^8.4.2",
     "@instantdb/react": "^1.0.52",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
@@ -23,6 +32,7 @@
     "recharts": "^3.10.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.4.2",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.1",
@@ -30,6 +40,8 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.4",
     "concurrently": "^10.0.4",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
     "typescript": "^7.0.2",
     "vite": "^8.1.5"
   }

@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+// HashRouter so routing works everywhere the app is packaged: file:// in
+// Electron and the Capacitor webview, with no server-side rewrites needed.
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { id, type User } from '@instantdb/react';
 import { db } from './lib/db';
 import { DEFAULT_LABELS, RETIRED_LABELS } from './lib/labels';
@@ -72,7 +74,7 @@ export default function AuthedApp() {
   if (!user) return <AuthPage />;
 
   return (
-    <BrowserRouter>
+    <HashRouter>
       <LabelSeeder user={user} />
       <Layout email={user.email ?? ''}>
         <Routes>
@@ -82,6 +84,6 @@ export default function AuthedApp() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>
-    </BrowserRouter>
+    </HashRouter>
   );
 }
