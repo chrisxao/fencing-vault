@@ -16,6 +16,7 @@ import { registerAuthRoutes } from './auth-routes.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
+const DIST_DIR = path.join(__dirname, '..', 'dist');
 
 function firstEnv(...names: string[]): string | undefined {
   for (const name of names) {
@@ -159,8 +160,24 @@ app.get('/api/files/:key', (req, res) => {
   });
 });
 
+// Keep API misses as JSON instead of letting the SPA fallback return index.html.
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'API route not found' });
+});
+
+// Railway runs this same Express process for both the API and the built web app.
+// Development keeps using Vite and its /api proxy, so static serving is production-only.
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(DIST_DIR));
+  app.get('/{*path}', (_req, res, next) => {
+    res.sendFile(path.join(DIST_DIR, 'index.html'), (err) => {
+      if (err) next(err);
+    });
+  });
+}
+
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[api] listening on http://0.0.0.0:${PORT}`);
+  console.log(`[server] listening on http://0.0.0.0:${PORT}`);
   if (useS3) {
     console.log(
       `[api] storage: S3-compatible bucket "${BUCKET}"${ENDPOINT ? ` via ${ENDPOINT}` : ''} (${FORCE_PATH_STYLE ? 'path-style' : 'virtual-hosted style'})`,
