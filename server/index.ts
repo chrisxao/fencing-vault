@@ -1,11 +1,9 @@
 // Upload/playback URL server.
 //
 // Targets any S3-compatible object storage (Railway object storage / MinIO,
-// AWS S3, R2, ...). When no bucket is configured it falls back to storing
-// files on local disk under ./uploads so the app works out of the box in dev.
+// AWS S3, R2, ...). Complete bucket configuration is required at startup.
 import 'dotenv/config';
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -15,7 +13,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { registerAuthRoutes } from './auth-routes.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
+const DIST_DIR = path.join(__dirname, '..', 'dist');
 
 function firstEnv(...names: string[]): string | undefined {
   for (const name of names) {
@@ -25,26 +23,56 @@ function firstEnv(...names: string[]): string | undefined {
   return undefined;
 }
 
+interface StorageConfig {
+  endpoint: string;
+  bucket: string;
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+}
+
+const REQUIRED_STORAGE_VARIABLES = [
+  ['endpoint', 'AWS_ENDPOINT_URL', 'S3_ENDPOINT'],
+  ['bucket', 'AWS_S3_BUCKET_NAME', 'S3_BUCKET'],
+  ['region', 'AWS_DEFAULT_REGION', 'S3_REGION'],
+  ['accessKeyId', 'AWS_ACCESS_KEY_ID', 'S3_ACCESS_KEY_ID'],
+  ['secretAccessKey', 'AWS_SECRET_ACCESS_KEY', 'S3_SECRET_ACCESS_KEY'],
+] as const satisfies ReadonlyArray<[keyof StorageConfig, string, string]>;
+
+function requireCompleteStorageConfig(
+  config: Partial<StorageConfig>,
+): asserts config is StorageConfig {
+  const missing = REQUIRED_STORAGE_VARIABLES.filter(([key]) => !config[key]).map(
+    ([, primary, alias]) => `${primary} (or ${alias})`,
+  );
+  if (missing.length > 0) {
+    throw new Error(`[storage] Missing required S3 configuration: ${missing.join(', ')}`);
+  }
+}
+
 const PORT = Number(process.env.PORT ?? 8787);
-const BUCKET = firstEnv('S3_BUCKET', 'AWS_S3_BUCKET_NAME');
-const ENDPOINT = firstEnv('S3_ENDPOINT', 'AWS_ENDPOINT_URL');
-const REGION = firstEnv('S3_REGION', 'AWS_REGION', 'AWS_DEFAULT_REGION') ?? 'auto';
-const ACCESS_KEY_ID = firstEnv('S3_ACCESS_KEY_ID', 'AWS_ACCESS_KEY_ID');
-const SECRET_ACCESS_KEY = firstEnv('S3_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY');
+const storageConfig: Partial<StorageConfig> = {
+  endpoint: firstEnv('AWS_ENDPOINT_URL', 'S3_ENDPOINT'),
+  bucket: firstEnv('AWS_S3_BUCKET_NAME', 'S3_BUCKET'),
+  region: firstEnv('AWS_DEFAULT_REGION', 'S3_REGION'),
+  accessKeyId: firstEnv('AWS_ACCESS_KEY_ID', 'S3_ACCESS_KEY_ID'),
+  secretAccessKey: firstEnv('AWS_SECRET_ACCESS_KEY', 'S3_SECRET_ACCESS_KEY'),
+};
+requireCompleteStorageConfig(storageConfig);
+
 const FORCE_PATH_STYLE = /^(1|true|yes)$/i.test(process.env.S3_FORCE_PATH_STYLE?.trim() ?? '');
 
-const useS3 = Boolean(BUCKET && ACCESS_KEY_ID && SECRET_ACCESS_KEY);
-
-const s3 = useS3
-  ? new S3Client({
-      region: REGION,
-      credentials: { accessKeyId: ACCESS_KEY_ID!, secretAccessKey: SECRET_ACCESS_KEY! },
-      ...(ENDPOINT ? { endpoint: ENDPOINT } : {}),
-      // Railway's current buckets use virtual-hosted addressing. MinIO and
-      // other providers that require path-style URLs can opt in explicitly.
-      forcePathStyle: FORCE_PATH_STYLE,
-    })
-  : null;
+const s3 = new S3Client({
+  endpoint: storageConfig.endpoint,
+  region: storageConfig.region,
+  credentials: {
+    accessKeyId: storageConfig.accessKeyId,
+    secretAccessKey: storageConfig.secretAccessKey,
+  },
+  // Railway's current buckets use virtual-hosted addressing. MinIO and
+  // other providers that require path-style URLs can opt in explicitly.
+  forcePathStyle: FORCE_PATH_STYLE,
+});
 
 const app = express();
 app.use(cors());
@@ -53,7 +81,7 @@ app.use(express.json());
 registerAuthRoutes(app);
 
 function sanitizeName(name: string): string {
-  const base = path.basename(name).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const base = (name.split(/[\\/]/).pop() ?? '').replace(/[^a-zA-Z0-9._-]/g, '_');
   return base.slice(-80) || 'video.mp4';
 }
 
@@ -62,15 +90,8 @@ function isValidKey(key: string): boolean {
   return /^[a-f0-9-]{36}__[a-zA-Z0-9._-]+$/.test(key);
 }
 
-/** Absolute origin for local-disk URLs so native and deployed clients can fetch them. */
-function publicOrigin(req: express.Request): string {
-  const proto = String(req.headers['x-forwarded-proto'] ?? req.protocol);
-  const host = String(req.headers['x-forwarded-host'] ?? req.get('host') ?? `localhost:${PORT}`);
-  return `${proto}://${host}`;
-}
-
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, storage: useS3 ? 's3' : 'local' });
+  res.json({ ok: true, storage: 's3' });
 });
 
 app.post('/api/presign-upload', async (req, res) => {
@@ -82,24 +103,16 @@ app.post('/api/presign-upload', async (req, res) => {
   const key = `${crypto.randomUUID()}__${sanitizeName(fileName)}`;
 
   try {
-    if (s3) {
-      const uploadUrl = await getSignedUrl(
-        s3,
-        new PutObjectCommand({
-          Bucket: BUCKET,
-          Key: key,
-          ContentType: typeof contentType === 'string' ? contentType : 'video/mp4',
-        }),
-        { expiresIn: 60 * 60 }, // 1 hour to complete the upload
-      );
-      res.json({ key, uploadUrl, storage: 's3' });
-    } else {
-      res.json({
-        key,
-        uploadUrl: `${publicOrigin(req)}/api/local-upload/${key}`,
-        storage: 'local',
-      });
-    }
+    const uploadUrl = await getSignedUrl(
+      s3,
+      new PutObjectCommand({
+        Bucket: storageConfig.bucket,
+        Key: key,
+        ContentType: typeof contentType === 'string' ? contentType : 'video/mp4',
+      }),
+      { expiresIn: 60 * 60 }, // 1 hour to complete the upload
+    );
+    res.json({ key, uploadUrl, storage: 's3' });
   } catch (err) {
     console.error('presign failed', err);
     res.status(500).json({ error: 'Failed to create upload URL' });
@@ -113,61 +126,37 @@ app.get('/api/playback-url', async (req, res) => {
     return;
   }
   try {
-    if (s3) {
-      const url = await getSignedUrl(
-        s3,
-        new GetObjectCommand({ Bucket: BUCKET, Key: key }),
-        { expiresIn: 60 * 60 * 6 }, // 6 hours of playback
-      );
-      res.json({ url });
-    } else {
-      res.json({ url: `${publicOrigin(req)}/api/files/${key}` });
-    }
+    const url = await getSignedUrl(
+      s3,
+      new GetObjectCommand({ Bucket: storageConfig.bucket, Key: key }),
+      { expiresIn: 60 * 60 * 6 }, // 6 hours of playback
+    );
+    res.json({ url });
   } catch (err) {
     console.error('playback-url failed', err);
     res.status(500).json({ error: 'Failed to create playback URL' });
   }
 });
 
-// ---- Local-disk fallback (dev only, used when no bucket is configured) ----
-
-app.put('/api/local-upload/:key', (req, res) => {
-  const { key } = req.params;
-  if (!isValidKey(key)) {
-    res.status(400).json({ error: 'Invalid key' });
-    return;
-  }
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-  const dest = fs.createWriteStream(path.join(UPLOADS_DIR, key));
-  req.pipe(dest);
-  dest.on('finish', () => res.status(200).json({ ok: true }));
-  dest.on('error', (err) => {
-    console.error('local upload failed', err);
-    res.status(500).json({ error: 'Failed to store file' });
-  });
+// Keep API misses as JSON instead of letting the SPA fallback return index.html.
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'API route not found' });
 });
 
-// sendFile handles HTTP Range requests, which the <video> element needs for seeking.
-app.get('/api/files/:key', (req, res) => {
-  const { key } = req.params;
-  if (!isValidKey(key)) {
-    res.status(400).json({ error: 'Invalid key' });
-    return;
-  }
-  res.sendFile(path.join(UPLOADS_DIR, key), (err) => {
-    if (err && !res.headersSent) res.status(404).json({ error: 'Not found' });
+// Railway runs this same Express process for both the API and the built web app.
+// Development keeps using Vite and its /api proxy, so static serving is production-only.
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(DIST_DIR));
+  app.get('/{*path}', (_req, res, next) => {
+    res.sendFile(path.join(DIST_DIR, 'index.html'), (err) => {
+      if (err) next(err);
+    });
   });
-});
+}
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[api] listening on http://0.0.0.0:${PORT}`);
-  if (useS3) {
-    console.log(
-      `[api] storage: S3-compatible bucket "${BUCKET}"${ENDPOINT ? ` via ${ENDPOINT}` : ''} (${FORCE_PATH_STYLE ? 'path-style' : 'virtual-hosted style'})`,
-    );
-  } else {
-    console.log(
-      '[api] storage: LOCAL DISK fallback (./uploads). Set Railway AWS_* or S3_* variables to use a bucket.',
-    );
-  }
+  console.log(`[server] listening on http://0.0.0.0:${PORT}`);
+  console.log(
+    `[api] storage: S3-compatible (${FORCE_PATH_STYLE ? 'path-style' : 'virtual-hosted style'})`,
+  );
 });

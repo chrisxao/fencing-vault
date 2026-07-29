@@ -7,10 +7,6 @@ function apiUrl(path: string) {
   return `${apiBaseUrl}${normalized}`;
 }
 
-function absoluteUrl(url: string) {
-  return url.startsWith('/') ? `${apiBaseUrl}${url}` : url;
-}
-
 async function apiJson<T>(
   path: string,
   init: RequestInit & { token?: string } = {},
@@ -82,13 +78,14 @@ export async function uploadVideo(
   const presign = await apiJson<{
     key: string;
     uploadUrl: string;
+    storage: 's3';
   }>('/api/presign-upload', {
     method: 'POST',
     body: JSON.stringify({ fileName: asset.name, contentType }),
   });
 
   const file = new File(asset.uri);
-  const task = file.createUploadTask(absoluteUrl(presign.uploadUrl), {
+  const task = file.createUploadTask(presign.uploadUrl, {
     httpMethod: 'PUT',
     uploadType: UploadType.BINARY_CONTENT,
     mimeType: contentType,
@@ -109,5 +106,5 @@ export async function getPlaybackUrl(key: string) {
   const response = await apiJson<{ url: string }>(
     `/api/playback-url?key=${encodeURIComponent(key)}`,
   );
-  return absoluteUrl(response.url);
+  return response.url;
 }

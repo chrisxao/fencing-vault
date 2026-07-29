@@ -7,8 +7,7 @@ Runs as a React web app and an Expo React Native app for iOS and Android.
 
 - **Frontend**: React + TypeScript (Vite), Recharts
 - **Data & auth**: [InstantDB](https://instantdb.com) with email/password (custom auth via Admin SDK)
-- **Video storage**: any S3-compatible object storage (built for Railway buckets / MinIO), with a
-  local-disk fallback for development
+- **Video storage**: required S3-compatible object storage (built for Railway buckets / MinIO)
 - **Native**: Expo 57 + React Native, using the Expo managed workflow
 
 ## Features
@@ -41,7 +40,7 @@ Fill in `.env`:
 | --- | --- |
 | `VITE_INSTANT_APP_ID` | Public app ID from [instantdb.com](https://instantdb.com) |
 | `INSTANT_APP_ADMIN_TOKEN` | Secret admin token — required for password auth (never commit) |
-| `VITE_API_URL` | Optional deployed API origin for the web build (empty = Vite `/api` proxy) |
+| `VITE_API_URL` | Optional API origin for separate clients; keep empty for local Vite and combined Railway deployments |
 | `AWS_ENDPOINT_URL` | S3 base endpoint from Railway's **AWS SDK (Generic)** preset |
 | `AWS_S3_BUCKET_NAME` | Globally unique S3 bucket name from the preset |
 | `AWS_DEFAULT_REGION` | Bucket region from the preset (usually `auto`) |
@@ -51,8 +50,9 @@ Fill in `.env`:
 The existing `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, and
 `S3_SECRET_ACCESS_KEY` aliases remain supported for other S3-compatible providers.
 
-**No bucket yet?** Leave the bucket and credential variables empty and uploads are stored on local
-disk under `./uploads` — perfect for development.
+Video storage is required in local development as well as production. Configure all five storage
+values before starting the API; startup fails with a list of any missing variables. The server does
+not store uploads on local disk.
 
 #### Railway object storage
 
@@ -64,6 +64,35 @@ Current Railway buckets require virtual-hosted-style URLs, so leave `S3_FORCE_PA
 `false`. For MinIO or another provider that explicitly requires path-style addressing, set
 `S3_FORCE_PATH_STYLE=true`. Uploads and playback both use short-lived presigned URLs, so the bucket
 can remain private.
+
+#### Railway deployment
+
+Deploy the repository as one public Railway service backed by one connected Bucket. The Express
+process serves both `/api` and the production Vite build, so a separate static service is neither
+needed nor supported by the same-origin configuration.
+
+Configure the public service with:
+
+- Build command: `npm run build`
+- Start command: `npm start`
+- `VITE_API_URL`: leave empty or unset so browser requests use the public service's own `/api`
+- `VITE_INSTANT_APP_ID` and `INSTANT_APP_ADMIN_TOKEN`: set from the Instant dashboard
+- Bucket variables: connect the Bucket using Railway's **AWS SDK (Generic)** preset
+
+Railway supplies `PORT`; the server listens on that port at `0.0.0.0`. Set the Railway health-check
+path to `/api/health`. A healthy deployment returns JSON with `ok: true` there, serves HTML from `/`
+and BrowserRouter paths such as `/settings`, returns a JSON `404` for unknown `/api/...` paths, and
+routes `POST /api/auth/signin` to Express rather than the static host.
+
+To verify the same production topology locally after building:
+
+```bash
+npm run build
+npm run smoke:production
+```
+
+The production smoke test supplies isolated dummy S3 values and only checks presigned URL
+generation; it never uploads to or downloads from a bucket.
 
 ### 2. Push the InstantDB schema (one-time, recommended)
 

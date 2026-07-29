@@ -26,12 +26,13 @@ export default function SetupGuide() {
           <li>Restart the dev server</li>
         </ol>
 
-        <h2>2. Video storage (optional for dev)</h2>
+        <h2>2. Video storage (required)</h2>
         <p>
           Connect a Railway Storage Bucket to the API with the <strong>AWS SDK (Generic)</strong>{' '}
           preset. It provides <code>AWS_ENDPOINT_URL</code>, <code>AWS_S3_BUCKET_NAME</code>,{' '}
-          <code>AWS_ACCESS_KEY_ID</code>, and <code>AWS_SECRET_ACCESS_KEY</code>. Without these,
-          videos are stored on local disk under <code>./uploads</code> — fine for trying things out.
+          <code>AWS_DEFAULT_REGION</code>, <code>AWS_ACCESS_KEY_ID</code>, and{' '}
+          <code>AWS_SECRET_ACCESS_KEY</code>. Configure all five values before starting the API,
+          including for local development.
         </p>
 
         <p className="muted small">See the README for full setup details.</p>
