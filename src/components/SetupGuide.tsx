@@ -28,10 +28,10 @@ export default function SetupGuide() {
 
         <h2>2. Video storage (optional for dev)</h2>
         <p>
-          Point the upload server at a Railway S3-compatible bucket by setting{' '}
-          <code>S3_ENDPOINT</code>, <code>S3_BUCKET</code>, <code>S3_ACCESS_KEY_ID</code> and{' '}
-          <code>S3_SECRET_ACCESS_KEY</code> in <code>.env</code>. Without these, videos are
-          stored on local disk under <code>./uploads</code> — fine for trying things out.
+          Connect a Railway Storage Bucket to the API with the <strong>AWS SDK (Generic)</strong>{' '}
+          preset. It provides <code>AWS_ENDPOINT_URL</code>, <code>AWS_S3_BUCKET_NAME</code>,{' '}
+          <code>AWS_ACCESS_KEY_ID</code>, and <code>AWS_SECRET_ACCESS_KEY</code>. Without these,
+          videos are stored on local disk under <code>./uploads</code> — fine for trying things out.
         </p>
 
         <p className="muted small">See the README for full setup details.</p>

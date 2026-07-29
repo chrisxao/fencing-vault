@@ -1,21 +1,16 @@
-// Instant DB schema for Fencing Vault.
-// Push to production with: npx instant-cli@latest push schema
-import { i } from '@instantdb/react';
+import { i } from '@instantdb/react-native';
 
 const _schema = i.schema({
   entities: {
     $users: i.entity({
       email: i.string().unique().indexed(),
     }),
-    // Display name + preferences. One profile per user.
     profiles: i.entity({
       name: i.string(),
-      defaultWeapon: i.string().optional(), // 'foil' | 'epee' | 'sabre'
+      defaultWeapon: i.string().optional(),
       createdAt: i.number(),
       updatedAt: i.number(),
     }),
-    // Password hashes — client access denied in instant.perms.ts; only the
-    // Express admin SDK reads/writes these.
     credentials: i.entity({
       email: i.string().unique().indexed(),
       passwordHash: i.string(),
@@ -24,7 +19,7 @@ const _schema = i.schema({
     }),
     videos: i.entity({
       title: i.string(),
-      weapon: i.string(), // 'foil' | 'epee' | 'sabre'
+      weapon: i.string(),
       s3Key: i.string(),
       opponent: i.string().optional(),
       event: i.string().optional(),
@@ -88,8 +83,7 @@ const _schema = i.schema({
 });
 
 type _AppSchema = typeof _schema;
-interface AppSchema extends _AppSchema {}
-const schema: AppSchema = _schema;
+export interface AppSchema extends _AppSchema {}
 
-export type { AppSchema };
+const schema: AppSchema = _schema;
 export default schema;

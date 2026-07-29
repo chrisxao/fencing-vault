@@ -1,9 +1,12 @@
 node_modules/
 dist/
-release/
 uploads/
 .env
 .env.local
+mobile/.env
+mobile/.env.local
+mobile/.expo/
+mobile/dist/
 *.log
 *.tsbuildinfo
 .DS_Store

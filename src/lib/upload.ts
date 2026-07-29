@@ -1,6 +1,5 @@
-// In the browser the API is reached via the Vite proxy at "/api". Packaged
-// apps (Capacitor iOS/Android, Electron) have no proxy, so they must point
-// VITE_API_URL at the deployed upload server, e.g. https://api.example.com
+// In development the web app reaches the API through Vite's "/api" proxy.
+// A deployed web build can point VITE_API_URL at the upload server.
 const API_BASE = ((import.meta.env.VITE_API_URL as string | undefined) ?? '').replace(/\/$/, '');
 
 /** Prefixes server-relative URLs (local-disk fallback) with the API base. */

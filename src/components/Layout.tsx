@@ -42,10 +42,13 @@ export default function Layout({ email, children }: { email: string; children: R
             Videos
           </NavLink>
           <NavLink to="/stats">Stats</NavLink>
+          <NavLink to="/settings">Settings</NavLink>
         </nav>
         <div className="topbar-right">
           <ThemeToggle />
-          <span className="user-email">{email}</span>
+          <NavLink to="/settings" className="user-email">
+            {email}
+          </NavLink>
           <button className="btn btn-ghost" onClick={() => db.auth.signOut()}>
             Sign out
           </button>

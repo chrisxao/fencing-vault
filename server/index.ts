@@ -12,16 +12,26 @@ import express from 'express';
 import cors from 'cors';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { registerAuthRoutes } from './auth-routes.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 
+function firstEnv(...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
 const PORT = Number(process.env.PORT ?? 8787);
-const BUCKET = process.env.S3_BUCKET;
-const ENDPOINT = process.env.S3_ENDPOINT; // e.g. Railway/MinIO endpoint URL
-const REGION = process.env.S3_REGION ?? process.env.AWS_REGION ?? 'auto';
-const ACCESS_KEY_ID = process.env.S3_ACCESS_KEY_ID ?? process.env.AWS_ACCESS_KEY_ID;
-const SECRET_ACCESS_KEY = process.env.S3_SECRET_ACCESS_KEY ?? process.env.AWS_SECRET_ACCESS_KEY;
+const BUCKET = firstEnv('S3_BUCKET', 'AWS_S3_BUCKET_NAME');
+const ENDPOINT = firstEnv('S3_ENDPOINT', 'AWS_ENDPOINT_URL');
+const REGION = firstEnv('S3_REGION', 'AWS_REGION', 'AWS_DEFAULT_REGION') ?? 'auto';
+const ACCESS_KEY_ID = firstEnv('S3_ACCESS_KEY_ID', 'AWS_ACCESS_KEY_ID');
+const SECRET_ACCESS_KEY = firstEnv('S3_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY');
+const FORCE_PATH_STYLE = /^(1|true|yes)$/i.test(process.env.S3_FORCE_PATH_STYLE?.trim() ?? '');
 
 const useS3 = Boolean(BUCKET && ACCESS_KEY_ID && SECRET_ACCESS_KEY);
 
@@ -29,15 +39,18 @@ const s3 = useS3
   ? new S3Client({
       region: REGION,
       credentials: { accessKeyId: ACCESS_KEY_ID!, secretAccessKey: SECRET_ACCESS_KEY! },
-      // S3-compatible providers (Railway, MinIO) generally require
-      // path-style addressing rather than virtual-hosted buckets.
-      ...(ENDPOINT ? { endpoint: ENDPOINT, forcePathStyle: true } : {}),
+      ...(ENDPOINT ? { endpoint: ENDPOINT } : {}),
+      // Railway's current buckets use virtual-hosted addressing. MinIO and
+      // other providers that require path-style URLs can opt in explicitly.
+      forcePathStyle: FORCE_PATH_STYLE,
     })
   : null;
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+registerAuthRoutes(app);
 
 function sanitizeName(name: string): string {
   const base = path.basename(name).replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -49,7 +62,7 @@ function isValidKey(key: string): boolean {
   return /^[a-f0-9-]{36}__[a-zA-Z0-9._-]+$/.test(key);
 }
 
-/** Absolute origin for local-disk URLs so Capacitor/Electron can fetch them. */
+/** Absolute origin for local-disk URLs so native and deployed clients can fetch them. */
 function publicOrigin(req: express.Request): string {
   const proto = String(req.headers['x-forwarded-proto'] ?? req.protocol);
   const host = String(req.headers['x-forwarded-host'] ?? req.get('host') ?? `localhost:${PORT}`);
@@ -149,8 +162,12 @@ app.get('/api/files/:key', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[api] listening on http://0.0.0.0:${PORT}`);
   if (useS3) {
-    console.log(`[api] storage: S3-compatible bucket "${BUCKET}"${ENDPOINT ? ` via ${ENDPOINT}` : ''}`);
+    console.log(
+      `[api] storage: S3-compatible bucket "${BUCKET}"${ENDPOINT ? ` via ${ENDPOINT}` : ''} (${FORCE_PATH_STYLE ? 'path-style' : 'virtual-hosted style'})`,
+    );
   } else {
-    console.log('[api] storage: LOCAL DISK fallback (./uploads). Set S3_* env vars to use a bucket.');
+    console.log(
+      '[api] storage: LOCAL DISK fallback (./uploads). Set Railway AWS_* or S3_* variables to use a bucket.',
+    );
   }
 });
