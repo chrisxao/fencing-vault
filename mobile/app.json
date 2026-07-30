@@ -9,7 +9,8 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.fencingvault.app"
+      "bundleIdentifier": "com.fencingvault.app",
+      "deploymentTarget": "16.4"
     },
     "android": {
       "package": "com.fencingvault.app",
