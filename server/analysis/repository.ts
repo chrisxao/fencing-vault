@@ -1,5 +1,10 @@
 import { id, requireAdmin } from '../auth.ts';
-import { candidateSegmentId, deterministicUuid, type Detection } from './domain.ts';
+import {
+  candidateSegmentId,
+  deterministicUuid,
+  planCandidateRejectionSegment,
+  type Detection,
+} from './domain.ts';
 
 export interface OwnedVideo {
   id: string;
@@ -435,6 +440,7 @@ export async function reviewCandidate(input: {
   const transactions = [];
   let after: unknown;
   if (input.action === 'reject') {
+    const segmentPlan = planCandidateRejectionSegment(candidate.id, candidate.segment);
     after = {
       candidate: {
         ...before.candidate,
@@ -442,14 +448,21 @@ export async function reviewCandidate(input: {
         reviewedAt: now,
         reviewNotes: input.notes,
       },
-      segment: null,
+      segment: segmentPlan ? null : before.segment,
     };
+    const candidateTransaction = admin.tx.analysisCandidates[candidate.id].update({
+      reviewState: 'rejected',
+      reviewedAt: now,
+      updatedAt: now,
+    });
     transactions.push(
-      admin.tx.analysisCandidates[candidate.id]
-        .update({ reviewState: 'rejected', reviewedAt: now, updatedAt: now })
-        .unlink({ segment: segmentId }),
-      admin.tx.segments[segmentId].delete(),
+      segmentPlan
+        ? candidateTransaction.unlink({ segment: segmentPlan.unlinkSegmentId })
+        : candidateTransaction,
     );
+    if (segmentPlan) {
+      transactions.push(admin.tx.segments[segmentPlan.deleteSegmentId].delete());
+    }
   } else {
     if (!input.result) {
       throw new CandidateReviewValidationError('Accepted candidates require a result');

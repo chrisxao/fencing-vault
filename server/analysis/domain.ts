@@ -191,6 +191,18 @@ export function candidateSegmentId(candidateId: string) {
   return deterministicUuid(`analysis-candidate-segment:${candidateId}`);
 }
 
+export function planCandidateRejectionSegment(
+  candidateId: string,
+  linkedSegment?: { id: string } | null,
+) {
+  const generatedSegmentId = candidateSegmentId(candidateId);
+  if (linkedSegment?.id !== generatedSegmentId) return null;
+  return {
+    unlinkSegmentId: generatedSegmentId,
+    deleteSegmentId: generatedSegmentId,
+  };
+}
+
 export const PIPELINE_VERSION = 'fencing-two-stage-v1';
 export const DEFAULT_PROMPT_VERSION = 'phrase-end-award-v1';
 export const pipelineConfig = {

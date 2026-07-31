@@ -7,6 +7,7 @@ import {
   createChunkWindows,
   finalizationInput,
   inferenceProgress,
+  planCandidateRejectionSegment,
   sourceTimestamp,
   stageAResultSchema,
   stageBResultSchema,
@@ -138,6 +139,27 @@ test('each clip and analysis run receives a stable distinct queue id', () => {
   );
   assert.equal(candidateSegmentId(clipA), candidateSegmentId(clipA));
   assert.notEqual(candidateSegmentId(clipA), candidateSegmentId(clipB));
+});
+
+test('candidate rejection skips segment cleanup when no segment is linked', () => {
+  const candidateId = '759f2a73-ea03-4855-96ef-374bc4a61077';
+  assert.equal(planCandidateRejectionSegment(candidateId), null);
+});
+
+test('candidate rejection removes only its linked generated segment', () => {
+  const candidateId = '759f2a73-ea03-4855-96ef-374bc4a61077';
+  const segmentId = candidateSegmentId(candidateId);
+
+  assert.deepEqual(planCandidateRejectionSegment(candidateId, { id: segmentId }), {
+    unlinkSegmentId: segmentId,
+    deleteSegmentId: segmentId,
+  });
+  assert.equal(
+    planCandidateRejectionSegment(candidateId, {
+      id: '40fc3d9e-a2f2-4fc9-b0e7-a9954880f8b0',
+    }),
+    null,
+  );
 });
 
 test('parent inference progress counts only successful clips', () => {
