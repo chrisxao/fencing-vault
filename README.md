@@ -67,14 +67,15 @@ can remain private.
 
 #### Railway deployment
 
-Deploy the repository as one public Railway service backed by one connected Bucket. The Express
-process serves both `/api` and the production Vite build, so a separate static service is neither
-needed nor supported by the same-origin configuration.
+Deploy the repository as one public API service plus private worker services backed by one Redis
+service and one connected Bucket. The API process serves both `/api` and the production Vite build,
+so a separate static service is neither needed nor supported by the same-origin configuration.
 
 Configure the public service with:
 
 - Build command: `npm run build`
 - Start command: `npm start`
+- `SERVICE_ROLE=api` (optional because `api` is the default)
 - `VITE_API_URL`: leave empty or unset so browser requests use the public service's own `/api`
 - `VITE_INSTANT_APP_ID` and `INSTANT_APP_ADMIN_TOKEN`: set from the Instant dashboard
 - Bucket variables: connect the Bucket using Railway's **AWS SDK (Generic)** preset
@@ -92,7 +93,65 @@ npm run smoke:production
 ```
 
 The production smoke test supplies isolated dummy S3 values and only checks presigned URL
-generation; it never uploads to or downloads from a bucket.
+authentication boundaries; it never uploads to or downloads from a bucket.
+
+### Automated analysis services
+
+The analysis MVP runs as separate processes from the public API:
+
+- `npm run start:api` — web/API service; starts normally without Redis
+- `npm run start:media-worker` — one FFmpeg preprocessing worker
+- `npm run start:vlm-worker` — BullMQ/OpenRouter inference worker; each clip is an independent,
+  idempotent job, so replicas parallelize a single long video
+- `npm run start:cleanup-worker` — derived-clip and orphan scanner; deletion remains disabled until
+  `MEDIA_CLEANUP_ENABLED=true`
+
+Use the checked-in Dockerfile for all services; it installs FFmpeg/ffprobe and runs `npm start`.
+Set `SERVICE_ROLE` to `media-worker`, `vlm-worker`, or `cleanup-worker` on each private worker
+service. The shared entrypoint exposes `/api/health` on every role, so the checked-in Railway health
+check works without per-service start-command overrides. Connect one private Railway Redis service
+to the API and workers through `REDIS_URL`. Connect the Bucket and Instant admin credentials to the
+API and all workers. Set `OPENROUTER_MODEL=google/gemini-3.1-flash-lite` on both the API and VLM
+worker so the API's config hash and persisted model match worker execution. Give
+`OPENROUTER_API_KEY` only to the VLM worker. Workers need no public domain.
+
+Analysis requests are authenticated and idempotent by video, source object checksum, and pipeline
+configuration. `POST /api/analysis/start`, `GET /api/analysis/:jobId`,
+`POST /api/analysis/:jobId/retry`, and `POST /api/analysis/:jobId/cancel` all verify ownership
+through the Instant Admin SDK. If Redis is absent they return `503 ANALYSIS_UNAVAILABLE`; unrelated
+API and web routes remain available.
+
+Each clip persists its validated detection or negative result, usage, cost, status, and attempt
+count. A deterministic finalization job runs only after every clip succeeds, deduplicates detections,
+and writes candidates and parent totals under a Redis lock. Terminal clip failure fails the parent;
+cancel and retry apply to every clip in that analysis run.
+
+`POST /api/analysis/candidates/:candidateId/review` accepts authenticated `accept`, `correct`, and
+`reject` decisions. Accepted/corrected candidates upsert one deterministic normal segment, while
+rejections remove that candidate's generated segment. Every request appends immutable before/after
+feedback. Web and mobile show current-run markers, progress, evidence, and explicit review controls.
+
+Uploads require a bearer token, declared MIME type and byte length, a client-generated video UUID,
+and a completion call that verifies the object with S3 `HeadObject`. Playback is owner-scoped and
+uses 15-minute URLs. The MVP uses bounded single presigned PUTs (2 GiB by default), not multipart;
+change `MEDIA_MAX_UPLOAD_BYTES` only if the selected S3 provider supports the desired single-PUT
+size. Failed uploads older than `MEDIA_ORPHAN_GRACE_HOURS` are cleanup candidates.
+
+Run focused pipeline tests and an optional labeled-model bake-off with:
+
+```bash
+npm test
+npm run analysis:bakeoff -- path/to/labeled-fixtures.json
+```
+
+The bake-off registry is provider-neutral and can be replaced with
+`ANALYSIS_MODEL_REGISTRY_JSON`. The built-in default enables the GA
+`google/gemini-3.1-flash-lite` model (currently listed at $0.25/M input tokens and $1.50/M output
+tokens). Qwen candidates remain registered but disabled because their current OpenRouter endpoints
+do not satisfy the enforced ZDR route. OpenRouter calls request strict JSON, deny provider data
+collection, request ZDR, disable provider fallback, and retain raw responses for audit. Native video
+requests fall back to base64 video and then sampled image frames when provider media support requires
+it; every fallback retains the same privacy controls.
 
 ### 2. Push the InstantDB schema (one-time, recommended)
 
@@ -118,17 +177,19 @@ API with the web app.
 cp mobile/.env.example mobile/.env
 npm --prefix mobile install
 
-# Start Expo from the repository root
-npm run mobile
+# Start the API and Expo together from the repository root
+npm run dev:mobile
 
 # Or launch a platform directly
-npm run mobile:ios
-npm run mobile:android
+npm run dev:mobile:ios
+npm run dev:mobile:android
 ```
 
 Set `EXPO_PUBLIC_INSTANT_APP_ID` to the same app ID as `VITE_INSTANT_APP_ID`, and set
-`EXPO_PUBLIC_API_URL` to the Express server's origin. A physical device needs your computer's LAN
-address (for example `http://192.168.1.20:8787`), not `localhost`.
+`EXPO_PUBLIC_API_URL` to the Express server's origin. The iOS simulator can use
+`http://127.0.0.1:8787`; a physical device needs your computer's current LAN address, not a sample
+or stale IP. The `dev:mobile*` scripts start Express and Expo together. The `mobile*` scripts start
+only Expo and require `npm run dev:api` in another terminal.
 
 This project intentionally uses Expo's managed workflow: there are no checked-in `ios/` or
 `android/` projects. Use EAS Build for signed App Store and Play Store binaries. See
@@ -147,3 +208,8 @@ Run `npm run mobile:typecheck` to check the native client.
 
 Permissions (`instant.perms.ts`) restrict every entity to its owner. Password credentials are locked
 to admin-only access.
+
+Analysis adds `analysisJobs`, `analysisClips`, `analysisCandidates`, `analysisFeedback`,
+`ingestionSources`, and `ingestionJobs`. Generated candidates stay separate from `segments`, so
+unreviewed model output never changes bout statistics. Push the updated schema and permissions only
+after reviewing them; this repository does not push them automatically.

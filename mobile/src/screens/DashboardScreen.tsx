@@ -12,7 +12,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { id, type User } from '@instantdb/react-native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { db } from '../lib/db';
-import { uploadVideo } from '../lib/api';
+import { deleteVideo as deleteVideoRequest, uploadVideo } from '../lib/api';
 import {
   WEAPONS,
   formatDate,
@@ -65,17 +65,26 @@ export function DashboardScreen({
   const scored = segments.filter((segment) => isScored(segment.result)).length;
   const received = segments.filter((segment) => isReceived(segment.result)).length;
 
-  function deleteVideo(videoId: string, segmentIds: string[]) {
+  function deleteVideo(videoId: string) {
     Alert.alert('Delete bout?', 'The video record and all analyzed touches will be removed.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         style: 'destructive',
-        onPress: () =>
-          db.transact([
-            ...segmentIds.map((segmentId) => db.tx.segments[segmentId].delete()),
-            db.tx.videos[videoId].delete(),
-          ]),
+        onPress: async () => {
+          if (!user.refresh_token) {
+            Alert.alert('Sign in again', 'The current session is missing an authentication token.');
+            return;
+          }
+          try {
+            await deleteVideoRequest(videoId, user.refresh_token);
+          } catch (error) {
+            Alert.alert(
+              'Could not delete bout',
+              error instanceof Error ? error.message : 'Please try again.',
+            );
+          }
+        },
       },
     ]);
   }
@@ -142,12 +151,7 @@ export function DashboardScreen({
                   <Button
                     compact
                     variant="danger"
-                    onPress={() =>
-                      deleteVideo(
-                        video.id,
-                        video.segments.map((segment) => segment.id),
-                      )
-                    }
+                    onPress={() => deleteVideo(video.id)}
                   >
                     Delete
                   </Button>
@@ -210,9 +214,11 @@ function UploadSheet({
       if (boutDate.trim() && !Number.isFinite(parsedDate)) {
         throw new Error('Use YYYY-MM-DD for the bout date.');
       }
-      const { key } = await uploadVideo(asset, setProgress);
+      if (!user.refresh_token) throw new Error('Missing session token. Sign in again.');
+      const videoId = id();
+      const { key } = await uploadVideo(asset, videoId, user.refresh_token, setProgress);
       await db.transact(
-        db.tx.videos[id()]
+        db.tx.videos[videoId]
           .update({
             title: title.trim() || asset.name,
             weapon,

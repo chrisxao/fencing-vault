@@ -26,6 +26,7 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      "./plugins/with-ios-scene-lifecycle",
       "expo-video"
     ]
   }

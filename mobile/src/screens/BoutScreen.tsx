@@ -18,7 +18,15 @@ import {
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { AppSchema } from '../lib/schema';
 import { db } from '../lib/db';
-import { getPlaybackUrl } from '../lib/api';
+import {
+  cancelVideoAnalysis,
+  getPlaybackUrl,
+  retryVideoAnalysis,
+  reviewAnalysisCandidate,
+  startVideoAnalysis,
+  type AnalysisReviewResult,
+  type CandidateReviewInput,
+} from '../lib/api';
 import {
   CATEGORIES,
   RESULTS,
@@ -44,9 +52,22 @@ import {
 } from '../components/ui';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Bout'> & { user: User };
-type Video = InstaQLEntity<AppSchema, 'videos', { segments: { labels: {} } }>;
+type Video = InstaQLEntity<
+  AppSchema,
+  'videos',
+  {
+    segments: { labels: {} };
+    analysisJobs: {
+      candidates: { feedback: {}; segment: {} };
+      feedback: {};
+    };
+  }
+>;
 type Segment = Video['segments'][number];
 type Label = InstaQLEntity<AppSchema, 'labels'>;
+type AnalysisJob = Video['analysisJobs'][number];
+type AnalysisCandidate = AnalysisJob['candidates'][number];
+type ReviewAction = CandidateReviewInput['action'];
 
 type SegmentDraft = {
   startTime: number;
@@ -63,6 +84,10 @@ export function BoutScreen({ user, route }: Props) {
     videos: {
       $: { where: { id: videoId, 'owner.id': user.id } },
       segments: { labels: {} },
+      analysisJobs: {
+        candidates: { feedback: {}, segment: {} },
+        feedback: {},
+      },
     },
     labels: { $: { where: { 'owner.id': user.id } } },
   });
@@ -98,6 +123,14 @@ function BoutAnalyzer({ video, labels, user }: { video: Video; labels: Label[]; 
   const [editing, setEditing] = useState<
     { segmentId?: string; draft: SegmentDraft } | undefined
   >();
+  const [candidateReview, setCandidateReview] = useState<{
+    candidate: AnalysisCandidate;
+    action: ReviewAction;
+  }>();
+  const [pendingCandidateId, setPendingCandidateId] = useState<string>();
+  const [analysisAction, setAnalysisAction] = useState<'start' | 'retry' | 'cancel'>();
+  const [analysisError, setAnalysisError] = useState('');
+  const [analysisNotice, setAnalysisNotice] = useState('');
 
   const player = useVideoPlayer(null, (instance) => {
     instance.timeUpdateEventInterval = 0.1;
@@ -112,7 +145,13 @@ function BoutAnalyzer({ video, labels, user }: { video: Video; labels: Label[]; 
 
   useEffect(() => {
     let active = true;
-    getPlaybackUrl(video.s3Key)
+    if (!user.refresh_token) {
+      setSourceError('Missing session token. Sign in again.');
+      return () => {
+        active = false;
+      };
+    }
+    getPlaybackUrl(video.s3Key, user.refresh_token)
       .then((url) => {
         if (active) setSource(url);
       })
@@ -124,7 +163,7 @@ function BoutAnalyzer({ video, labels, user }: { video: Video; labels: Label[]; 
     return () => {
       active = false;
     };
-  }, [video.s3Key]);
+  }, [user.refresh_token, video.s3Key]);
 
   useEffect(() => {
     if (!source) return;
@@ -145,6 +184,30 @@ function BoutAnalyzer({ video, labels, user }: { video: Video; labels: Label[]; 
     () => [...video.segments].sort((left, right) => left.startTime - right.startTime),
     [video.segments],
   );
+  const analysisJobs = useMemo(
+    () => [...video.analysisJobs].sort((left, right) => right.createdAt - left.createdAt),
+    [video.analysisJobs],
+  );
+  const latestJob = analysisJobs[0];
+  const analysisCandidates = useMemo(() => {
+    if (!latestJob) return [];
+    return latestJob.candidates
+      .filter((candidate) => !latestJob.runId || candidate.runId === latestJob.runId)
+      .sort((left, right) => left.eventTimestamp - right.eventTimestamp);
+  }, [latestJob]);
+
+  useEffect(() => {
+    if (!pendingCandidateId) return;
+    const candidate = analysisCandidates.find((item) => item.id === pendingCandidateId);
+    if (!candidate || candidate.reviewState !== 'unreviewed') {
+      setPendingCandidateId(undefined);
+    }
+  }, [analysisCandidates, pendingCandidateId]);
+
+  useEffect(() => {
+    if (candidateReview) player.pause();
+  }, [candidateReview, player]);
+
   const scored = segments.filter((segment) => isScored(segment.result)).length;
   const received = segments.filter((segment) => isReceived(segment.result)).length;
 
@@ -210,6 +273,51 @@ function BoutAnalyzer({ video, labels, user }: { video: Video; labels: Label[]; 
     ]);
   }
 
+  function sessionToken() {
+    if (!user.refresh_token) {
+      throw new Error('Missing session token. Sign in again.');
+    }
+    return user.refresh_token;
+  }
+
+  async function runAnalysisAction(action: 'start' | 'retry' | 'cancel') {
+    if (analysisAction) return;
+    setAnalysisAction(action);
+    setAnalysisError('');
+    setAnalysisNotice('');
+    try {
+      const token = sessionToken();
+      if (action === 'start') {
+        const response = await startVideoAnalysis(video.id, token);
+        if (response.idempotent) {
+          setAnalysisNotice('This video is already using the current analysis.');
+        }
+      } else {
+        if (!latestJob) throw new Error('No analysis job is available.');
+        if (action === 'retry') await retryVideoAnalysis(latestJob.id, token);
+        else await cancelVideoAnalysis(latestJob.id, token);
+      }
+    } catch (value) {
+      setAnalysisError(value instanceof Error ? value.message : 'Could not update video analysis.');
+    } finally {
+      setAnalysisAction(undefined);
+    }
+  }
+
+  async function submitCandidateReview(
+    candidate: AnalysisCandidate,
+    input: CandidateReviewInput,
+  ) {
+    if (pendingCandidateId) throw new Error('Another review is still being saved.');
+    setPendingCandidateId(candidate.id);
+    try {
+      await reviewAnalysisCandidate(candidate.id, input, sessionToken());
+    } catch (value) {
+      setPendingCandidateId(undefined);
+      throw value;
+    }
+  }
+
   return (
     <Screen>
       <View style={styles.header}>
@@ -224,6 +332,17 @@ function BoutAnalyzer({ video, labels, user }: { video: Video; labels: Label[]; 
           {scored}–{received}
         </Text>
       </View>
+
+      <AnalysisStatusPanel
+        job={latestJob}
+        candidateCount={analysisCandidates.length}
+        action={analysisAction}
+        error={analysisError}
+        notice={analysisNotice}
+        onStart={() => runAnalysisAction('start')}
+        onRetry={() => runAnalysisAction('retry')}
+        onCancel={() => runAnalysisAction('cancel')}
+      />
 
       <View style={[styles.playerShell, { backgroundColor: '#050506' }]}>
         {sourceError ? (
@@ -249,6 +368,27 @@ function BoutAnalyzer({ video, labels, user }: { video: Video; labels: Label[]; 
         }}
         style={[styles.timeline, { backgroundColor: colors.border }]}
       >
+        {analysisCandidates.map((candidate) => (
+          <View
+            key={candidate.id}
+            style={[
+              styles.timelineCandidate,
+              {
+                backgroundColor:
+                  candidate.reviewState === 'rejected'
+                    ? colors.surface
+                    : candidate.reviewState === 'accepted' ||
+                        candidate.reviewState === 'corrected'
+                      ? colors.success
+                      : colors.accent,
+                borderColor:
+                  candidate.reviewState === 'rejected' ? colors.danger : colors.accent,
+                left: `${duration ? (candidate.eventStart / duration) * 100 : 0}%`,
+                width: `${duration ? Math.max(1.5, ((candidate.eventEnd - candidate.eventStart) / duration) * 100) : 1.5}%`,
+              },
+            ]}
+          />
+        ))}
         {segments.map((segment) => {
           const category = CATEGORIES.find((option) => option.id === segment.category);
           return (
@@ -286,6 +426,19 @@ function BoutAnalyzer({ video, labels, user }: { video: Video; labels: Label[]; 
           ]}
         />
       </Pressable>
+      {analysisCandidates.length ? (
+        <View style={styles.timelineLegend}>
+          <View
+            style={[
+              styles.timelineLegendSwatch,
+              { backgroundColor: colors.accent, borderColor: colors.accent },
+            ]}
+          />
+          <Text style={[styles.timelineLegendText, { color: colors.muted }]}>
+            AI candidates from the latest analysis run
+          </Text>
+        </View>
+      ) : null}
 
       <View style={styles.controls}>
         <Button compact variant="secondary" onPress={() => seek(currentTime - 5)}>
@@ -343,6 +496,36 @@ function BoutAnalyzer({ video, labels, user }: { video: Video; labels: Label[]; 
             Cancel mark
           </Button>
         </Panel>
+      )}
+
+      <Text style={[styles.sectionTitle, { color: colors.text }]}>
+        AI candidate review ({analysisCandidates.length})
+      </Text>
+      {analysisCandidates.length === 0 ? (
+        <Panel>
+          <Text style={[styles.help, { color: colors.muted }]}>
+            No candidates are available for the latest analysis run. Start analysis or wait for the
+            current run to finish.
+          </Text>
+        </Panel>
+      ) : (
+        analysisCandidates.map((candidate, index) => (
+          <CandidateCard
+            key={candidate.id}
+            candidate={candidate}
+            index={index}
+            active={
+              currentTime >= candidate.eventStart && currentTime <= candidate.eventEnd
+            }
+            pendingCandidateId={pendingCandidateId}
+            onPreview={() => {
+              seek(candidate.eventStart);
+              player.play();
+            }}
+            onSeek={() => seek(candidate.eventTimestamp)}
+            onReview={(action) => setCandidateReview({ candidate, action })}
+          />
+        ))
       )}
 
       <Text style={[styles.sectionTitle, { color: colors.text }]}>Touches ({segments.length})</Text>
@@ -426,7 +609,581 @@ function BoutAnalyzer({ video, labels, user }: { video: Video; labels: Label[]; 
         onClose={() => setEditing(undefined)}
         onSave={saveSegment}
       />
+      <CandidateReviewEditor
+        visible={Boolean(candidateReview)}
+        candidate={candidateReview?.candidate}
+        action={candidateReview?.action}
+        weapon={video.weapon}
+        duration={duration}
+        pending={Boolean(
+          candidateReview && pendingCandidateId === candidateReview.candidate.id,
+        )}
+        onClose={() => setCandidateReview(undefined)}
+        onSubmit={(input) => {
+          if (!candidateReview) throw new Error('No candidate is selected.');
+          return submitCandidateReview(candidateReview.candidate, input);
+        }}
+      />
     </Screen>
+  );
+}
+
+const ACTIVE_ANALYSIS_STATUSES = new Set(['queued', 'processing', 'retrying']);
+
+function reviewStateLabel(state: string) {
+  switch (state) {
+    case 'accepted':
+      return 'Accepted';
+    case 'corrected':
+      return 'Corrected';
+    case 'rejected':
+      return 'Rejected';
+    default:
+      return 'Needs review';
+  }
+}
+
+function formatStage(stage: string) {
+  const label = stage.replaceAll('_', ' ').trim();
+  return label ? label[0].toUpperCase() + label.slice(1) : 'Queued';
+}
+
+function awardedSideLabel(side?: string) {
+  if (!side) return 'Unknown';
+  return side[0].toUpperCase() + side.slice(1);
+}
+
+function parseEvidence(value: string) {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function AnalysisStatusPanel({
+  job,
+  candidateCount,
+  action,
+  error,
+  notice,
+  onStart,
+  onRetry,
+  onCancel,
+}: {
+  job?: AnalysisJob;
+  candidateCount: number;
+  action?: 'start' | 'retry' | 'cancel';
+  error: string;
+  notice: string;
+  onStart: () => void;
+  onRetry: () => void;
+  onCancel: () => void;
+}) {
+  const { colors } = useTheme();
+  const active = Boolean(job && ACTIVE_ANALYSIS_STATUSES.has(job.status));
+  const progress = Math.max(0, Math.min(1, job?.progress ?? 0));
+  const statusColor =
+    job?.status === 'completed'
+      ? colors.success
+      : job?.status === 'failed' || job?.status === 'cancelled'
+        ? colors.danger
+        : colors.accent;
+
+  return (
+    <Panel>
+      <View style={styles.analysisHeader}>
+        <View style={styles.analysisTitleBlock}>
+          <Text style={[styles.analysisTitle, { color: colors.text }]}>AI-assisted review</Text>
+          <Text style={[styles.help, { color: colors.muted }]}>
+            Candidates stay separate from your statistics until you review them.
+          </Text>
+        </View>
+        {job ? <Pill color={statusColor} selected>{formatStage(job.status)}</Pill> : null}
+      </View>
+
+      {job ? (
+        <>
+          <View style={styles.analysisFacts}>
+            <View style={[styles.analysisFact, { backgroundColor: colors.elevated }]}>
+              <Text style={[styles.factLabel, { color: colors.muted }]}>Stage</Text>
+              <Text style={[styles.factValue, { color: colors.text }]}>
+                {formatStage(job.stage)}
+              </Text>
+            </View>
+            <View style={[styles.analysisFact, { backgroundColor: colors.elevated }]}>
+              <Text style={[styles.factLabel, { color: colors.muted }]}>Progress</Text>
+              <Text style={[styles.factValue, { color: colors.text }]}>
+                {Math.round(progress * 100)}%
+              </Text>
+            </View>
+            <View style={[styles.analysisFact, { backgroundColor: colors.elevated }]}>
+              <Text style={[styles.factLabel, { color: colors.muted }]}>Candidates</Text>
+              <Text style={[styles.factValue, { color: colors.text }]}>{candidateCount}</Text>
+            </View>
+            <View style={[styles.analysisFact, { backgroundColor: colors.elevated }]}>
+              <Text style={[styles.factLabel, { color: colors.muted }]}>Cost</Text>
+              <Text style={[styles.factValue, { color: colors.text }]}>
+                {typeof job.costUsd === 'number' ? `$${job.costUsd.toFixed(4)}` : '—'}
+              </Text>
+            </View>
+          </View>
+          <View style={[styles.analysisProgress, { backgroundColor: colors.elevated }]}>
+            <View
+              style={[
+                styles.analysisProgressFill,
+                { backgroundColor: colors.accent, width: `${progress * 100}%` },
+              ]}
+            />
+          </View>
+          {job.error ? <Message error>{job.error}</Message> : null}
+        </>
+      ) : (
+        <Text style={[styles.help, { color: colors.muted }]}>
+          Analyze this video to detect possible phrase endings and awarded points.
+        </Text>
+      )}
+
+      <View style={styles.analysisButtons}>
+        {!job || job.status === 'completed' ? (
+          <Button
+            compact
+            onPress={onStart}
+            disabled={Boolean(action)}
+            busy={action === 'start'}
+          >
+            {job?.status === 'completed' ? 'Analyze again' : 'Analyze bout'}
+          </Button>
+        ) : null}
+        {job && active ? (
+          <Button
+            compact
+            variant="danger"
+            onPress={onCancel}
+            disabled={Boolean(action) || job.cancelRequested}
+            busy={action === 'cancel'}
+          >
+            Cancel analysis
+          </Button>
+        ) : null}
+        {job && (job.status === 'failed' || job.status === 'cancelled') ? (
+          <Button
+            compact
+            onPress={onRetry}
+            disabled={Boolean(action)}
+            busy={action === 'retry'}
+          >
+            Retry analysis
+          </Button>
+        ) : null}
+      </View>
+      {error ? <Message error>{error}</Message> : null}
+      {notice ? <Message>{notice}</Message> : null}
+    </Panel>
+  );
+}
+
+function CandidateCard({
+  candidate,
+  index,
+  active,
+  pendingCandidateId,
+  onPreview,
+  onSeek,
+  onReview,
+}: {
+  candidate: AnalysisCandidate;
+  index: number;
+  active: boolean;
+  pendingCandidateId?: string;
+  onPreview: () => void;
+  onSeek: () => void;
+  onReview: (action: ReviewAction) => void;
+}) {
+  const { colors } = useTheme();
+  const evidence = parseEvidence(candidate.evidenceJson);
+  const pending = pendingCandidateId === candidate.id;
+  const latestFeedback = [...candidate.feedback].sort(
+    (left, right) => right.createdAt - left.createdAt,
+  )[0];
+  const stateColor =
+    candidate.reviewState === 'accepted' || candidate.reviewState === 'corrected'
+      ? colors.success
+      : candidate.reviewState === 'rejected'
+        ? colors.danger
+        : colors.accent;
+
+  return (
+    <Panel style={active ? { borderColor: colors.accent } : undefined}>
+      <View style={styles.candidateHeader}>
+        <Pressable onPress={onSeek}>
+          <Text style={[styles.candidateTimestamp, { color: colors.accent }]}>
+            {formatTime(candidate.eventTimestamp)}
+          </Text>
+        </Pressable>
+        <Pill color={stateColor} selected>{reviewStateLabel(candidate.reviewState)}</Pill>
+        <Text style={[styles.candidateIndex, { color: colors.muted }]}>
+          Candidate {index + 1}
+        </Text>
+      </View>
+
+      <View style={styles.candidateFacts}>
+        <View style={[styles.candidateFact, { backgroundColor: colors.elevated }]}>
+          <Text style={[styles.factLabel, { color: colors.muted }]}>Confidence</Text>
+          <Text style={[styles.factValue, { color: colors.text }]}>
+            {Math.round(candidate.confidence * 100)}%
+          </Text>
+        </View>
+        <View style={[styles.candidateFact, { backgroundColor: colors.elevated }]}>
+          <Text style={[styles.factLabel, { color: colors.muted }]}>Point</Text>
+          <Text style={[styles.factValue, { color: colors.text }]}>
+            {candidate.pointAwarded === true
+              ? 'Awarded'
+              : candidate.pointAwarded === false
+                ? 'Not awarded'
+                : 'Unknown'}
+          </Text>
+        </View>
+        <View style={[styles.candidateFact, { backgroundColor: colors.elevated }]}>
+          <Text style={[styles.factLabel, { color: colors.muted }]}>Camera side</Text>
+          <Text style={[styles.factValue, { color: colors.text }]}>
+            {awardedSideLabel(candidate.awardedSide)}
+          </Text>
+        </View>
+      </View>
+
+      <Text style={[styles.time, { color: colors.muted }]}>
+        Window {formatTime(candidate.eventStart)}–{formatTime(candidate.eventEnd)}
+      </Text>
+      {evidence.length ? (
+        <View style={styles.evidenceBlock}>
+          <Text style={[styles.label, { color: colors.muted }]}>EVIDENCE</Text>
+          {evidence.map((item, evidenceIndex) => (
+            <Text
+              key={`${candidate.id}:evidence:${evidenceIndex}`}
+              style={[styles.evidenceItem, { color: colors.text }]}
+            >
+              • {item}
+            </Text>
+          ))}
+        </View>
+      ) : (
+        <Text style={[styles.help, { color: colors.muted }]}>
+          No model evidence was recorded.
+        </Text>
+      )}
+      <Text style={[styles.modelText, { color: colors.muted }]}>
+        {candidate.model}
+        {candidate.provider ? ` · ${candidate.provider}` : ''} · prompt {candidate.promptVersion}
+      </Text>
+
+      {candidate.segment ? (
+        <View
+          style={[
+            styles.linkedSegment,
+            { backgroundColor: colors.elevated, borderLeftColor: colors.success },
+          ]}
+        >
+          <Text style={[styles.help, { color: colors.text }]}>
+            Created touch {formatTime(candidate.segment.startTime)}–
+            {formatTime(candidate.segment.endTime)} ·{' '}
+            {RESULTS.find((result) => result.id === candidate.segment?.result)?.name ??
+              candidate.segment.result}
+          </Text>
+        </View>
+      ) : null}
+      {latestFeedback?.reason || latestFeedback?.comment ? (
+        <View style={[styles.feedbackBlock, { borderTopColor: colors.border }]}>
+          {latestFeedback.reason ? (
+            <Text style={[styles.help, { color: colors.muted }]}>
+              Notes: {latestFeedback.reason}
+            </Text>
+          ) : null}
+          {latestFeedback.comment ? (
+            <Text style={[styles.help, { color: colors.muted }]}>
+              Comment: {latestFeedback.comment}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+
+      <View style={styles.candidateActions}>
+        <Button compact variant="secondary" onPress={onPreview}>
+          Preview
+        </Button>
+        {candidate.reviewState === 'unreviewed' ? (
+          <>
+            <Button
+              compact
+              onPress={() => onReview('accept')}
+              disabled={Boolean(pendingCandidateId)}
+              busy={pending}
+            >
+              Accept
+            </Button>
+            <Button
+              compact
+              variant="secondary"
+              onPress={() => onReview('correct')}
+              disabled={Boolean(pendingCandidateId)}
+            >
+              Correct
+            </Button>
+            <Button
+              compact
+              variant="danger"
+              onPress={() => onReview('reject')}
+              disabled={Boolean(pendingCandidateId)}
+            >
+              Reject
+            </Button>
+          </>
+        ) : null}
+      </View>
+    </Panel>
+  );
+}
+
+function CandidateReviewEditor({
+  visible,
+  candidate,
+  action,
+  weapon,
+  duration,
+  pending,
+  onClose,
+  onSubmit,
+}: {
+  visible: boolean;
+  candidate?: AnalysisCandidate;
+  action?: ReviewAction;
+  weapon: string;
+  duration: number;
+  pending: boolean;
+  onClose: () => void;
+  onSubmit: (input: CandidateReviewInput) => Promise<void>;
+}) {
+  const { colors } = useTheme();
+  const [result, setResult] = useState<AnalysisReviewResult | ''>('');
+  const [startTime, setStartTime] = useState('');
+  const [endTime, setEndTime] = useState('');
+  const [timestamp, setTimestamp] = useState('');
+  const [notes, setNotes] = useState('');
+  const [comment, setComment] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!visible || !candidate) return;
+    setResult('');
+    setStartTime(String(candidate.eventStart));
+    setEndTime(String(candidate.eventEnd));
+    setTimestamp(String(candidate.eventTimestamp));
+    setNotes('');
+    setComment('');
+    setSaving(false);
+    setError('');
+  }, [action, candidate?.id, visible]);
+
+  if (!candidate || !action) return null;
+  const currentCandidate = candidate;
+  const rejecting = action === 'reject';
+  const editingTimes = action === 'correct';
+
+  async function saveReview() {
+    if (saving || pending) return;
+    setError('');
+    const normalizedNotes = notes.trim() || undefined;
+    const normalizedComment = comment.trim() || undefined;
+    let input: CandidateReviewInput;
+
+    if (rejecting) {
+      input = {
+        action: 'reject',
+        notes: normalizedNotes,
+        comment: normalizedComment,
+      };
+    } else {
+      if (!result) {
+        setError('Choose the fencing result relative to you.');
+        return;
+      }
+      if (editingTimes) {
+        const start = Number(startTime);
+        const end = Number(endTime);
+        const eventTime = Number(timestamp);
+        if (![start, end, eventTime].every(Number.isFinite) || start < 0) {
+          setError('Enter valid non-negative timestamps.');
+          return;
+        }
+        if (end <= start) {
+          setError('End time must be after start time.');
+          return;
+        }
+        if (eventTime < start || eventTime > end) {
+          setError('Point timestamp must fall inside the event window.');
+          return;
+        }
+        if (duration > 0 && end > duration) {
+          setError('Event timestamps cannot exceed the video duration.');
+          return;
+        }
+        input = {
+          action: 'correct',
+          startTime: start,
+          endTime: end,
+          timestamp: eventTime,
+          result,
+          notes: normalizedNotes,
+          comment: normalizedComment,
+        };
+      } else {
+        input = {
+          action: 'accept',
+          result,
+          notes: normalizedNotes,
+          comment: normalizedComment,
+        };
+      }
+    }
+
+    setSaving(true);
+    try {
+      await onSubmit(input);
+      onClose();
+    } catch (value) {
+      setError(value instanceof Error ? value.message : 'Could not save this review.');
+      setSaving(false);
+    }
+  }
+
+  const title =
+    action === 'accept'
+      ? 'Accept AI candidate'
+      : action === 'correct'
+        ? 'Correct AI candidate'
+        : 'Reject AI candidate';
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={() => {
+        if (!saving) onClose();
+      }}
+    >
+      <Screen>
+        <View style={styles.header}>
+          <PageTitle>{title}</PageTitle>
+          <Button compact variant="secondary" onPress={onClose} disabled={saving}>
+            Close
+          </Button>
+        </View>
+        <Panel>
+          <Text style={[styles.help, { color: colors.muted }]}>
+            AI reported {awardedSideLabel(currentCandidate.awardedSide).toLowerCase()} at{' '}
+            {formatTime(currentCandidate.eventTimestamp)}. Left and right are camera positions, not
+            your side.
+          </Text>
+
+          {editingTimes ? (
+            <>
+              <View style={styles.twoColumns}>
+                <View style={styles.column}>
+                  <Field
+                    label="Start (seconds)"
+                    value={startTime}
+                    onChangeText={setStartTime}
+                    keyboardType="decimal-pad"
+                  />
+                </View>
+                <View style={styles.column}>
+                  <Field
+                    label="End (seconds)"
+                    value={endTime}
+                    onChangeText={setEndTime}
+                    keyboardType="decimal-pad"
+                  />
+                </View>
+              </View>
+              <Field
+                label="Point timestamp"
+                value={timestamp}
+                onChangeText={setTimestamp}
+                keyboardType="decimal-pad"
+              />
+            </>
+          ) : !rejecting ? (
+            <View style={[styles.originalWindow, { backgroundColor: colors.elevated }]}>
+              <Text style={[styles.time, { color: colors.muted }]}>
+                Segment {formatTime(currentCandidate.eventStart)}–
+                {formatTime(currentCandidate.eventEnd)} · point at{' '}
+                {formatTime(currentCandidate.eventTimestamp)}
+              </Text>
+            </View>
+          ) : null}
+
+          {!rejecting ? (
+            <>
+              <Text style={[styles.label, { color: colors.muted }]}>RESULT RELATIVE TO YOU</Text>
+              <Text style={[styles.help, { color: colors.muted }]}>
+                Select this explicitly. The camera-side award is never converted automatically.
+              </Text>
+              <ChoiceRow>
+                {resultsForWeapon(weapon).map((option) => (
+                  <Pill
+                    key={option.id}
+                    color={option.color}
+                    selected={result === option.id}
+                    onPress={() => setResult(option.id)}
+                  >
+                    {option.name}
+                  </Pill>
+                ))}
+              </ChoiceRow>
+            </>
+          ) : null}
+
+          <Field
+            label={rejecting ? 'Rejection notes' : 'Touch notes'}
+            value={notes}
+            onChangeText={setNotes}
+            multiline
+            autoCapitalize="sentences"
+            placeholder={
+              rejecting
+                ? 'Why is this not a touch?'
+                : 'Optional notes saved on the created touch'
+            }
+          />
+          <Field
+            label="Reviewer comment"
+            value={comment}
+            onChangeText={setComment}
+            multiline
+            autoCapitalize="sentences"
+            placeholder="Optional feedback about the model output"
+          />
+          {error ? <Message error>{error}</Message> : null}
+          <Button
+            variant={rejecting ? 'danger' : 'primary'}
+            onPress={saveReview}
+            busy={saving || pending}
+            disabled={!rejecting && !result}
+          >
+            {action === 'accept'
+              ? 'Accept and create touch'
+              : action === 'correct'
+                ? 'Save correction'
+                : 'Reject candidate'}
+          </Button>
+        </Panel>
+      </Screen>
+    </Modal>
   );
 }
 
@@ -624,11 +1381,38 @@ function SegmentEditor({
 const styles = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12 },
   score: { fontSize: 27, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  analysisHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  analysisTitleBlock: { flex: 1, gap: 4 },
+  analysisTitle: { fontSize: 18, fontWeight: '700' },
+  analysisFacts: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  analysisFact: { width: '48%', borderRadius: 9, paddingHorizontal: 10, paddingVertical: 8, gap: 2 },
+  analysisButtons: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  analysisProgress: { height: 7, borderRadius: 7, overflow: 'hidden' },
+  analysisProgressFill: { height: '100%', borderRadius: 7 },
+  factLabel: { fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
+  factValue: { fontSize: 14, fontWeight: '600' },
   playerShell: { aspectRatio: 16 / 9, borderRadius: 12, overflow: 'hidden' },
   player: { width: '100%', height: '100%' },
   playerError: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 },
-  timeline: { height: 30, borderRadius: 7, overflow: 'hidden', position: 'relative' },
-  timelineSegment: { position: 'absolute', top: 4, bottom: 4, borderRadius: 4 },
+  timeline: { height: 40, borderRadius: 7, overflow: 'hidden', position: 'relative' },
+  timelineSegment: { position: 'absolute', top: 14, bottom: 4, borderRadius: 4 },
+  timelineCandidate: {
+    position: 'absolute',
+    top: 3,
+    height: 7,
+    minWidth: 5,
+    borderWidth: 1,
+    borderRadius: 2,
+    zIndex: 2,
+  },
+  timelineLegend: { flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: -10 },
+  timelineLegendSwatch: { width: 18, height: 6, borderWidth: 1, borderRadius: 2 },
+  timelineLegendText: { fontSize: 12 },
   playhead: { position: 'absolute', top: 0, bottom: 0, width: 2 },
   mark: { position: 'absolute', top: 0, bottom: 0, width: 3 },
   controls: { flexDirection: 'row', gap: 6, justifyContent: 'space-between' },
@@ -639,7 +1423,19 @@ const styles = StyleSheet.create({
   touchHead: { flexDirection: 'row', alignItems: 'center', gap: 9, flexWrap: 'wrap' },
   touchNumber: { fontSize: 13, fontWeight: '700' },
   notes: { fontSize: 14, lineHeight: 20 },
-  touchActions: { flexDirection: 'row', gap: 8 },
+  touchActions: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  candidateHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  candidateTimestamp: { fontSize: 14, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  candidateIndex: { marginLeft: 'auto', fontSize: 12 },
+  candidateFacts: { flexDirection: 'row', gap: 7 },
+  candidateFact: { flex: 1, minWidth: 82, borderRadius: 9, paddingHorizontal: 9, paddingVertical: 8, gap: 2 },
+  evidenceBlock: { gap: 4 },
+  evidenceItem: { fontSize: 14, lineHeight: 20 },
+  modelText: { fontSize: 12, lineHeight: 17 },
+  linkedSegment: { borderLeftWidth: 3, borderRadius: 8, padding: 10 },
+  feedbackBlock: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 10, gap: 4 },
+  candidateActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  originalWindow: { borderRadius: 9, padding: 11 },
   twoColumns: { flexDirection: 'row', gap: 10 },
   column: { flex: 1 },
   label: { fontSize: 12, fontWeight: '600', letterSpacing: 0.7 },

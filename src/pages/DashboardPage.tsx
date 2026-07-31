@@ -5,6 +5,7 @@ import { db } from '../lib/db';
 import { weaponName } from '../lib/labels';
 import { isScored, isReceived } from '../lib/stats';
 import { formatDate } from '../lib/format';
+import { deleteVideo as deleteVideoRequest } from '../lib/upload';
 import UploadModal from '../components/UploadModal';
 import BrandMark from '../components/BrandMark';
 
@@ -25,12 +26,17 @@ export default function DashboardPage({ user }: { user: User }) {
   const scored = allSegments.filter((s) => isScored(s.result)).length;
   const received = allSegments.filter((s) => isReceived(s.result)).length;
 
-  async function deleteVideo(videoId: string, segmentIds: string[]) {
+  async function deleteVideo(videoId: string) {
     if (!confirm('Delete this video and all its touches and comments?')) return;
-    await db.transact([
-      ...segmentIds.map((sid) => db.tx.segments[sid].delete()),
-      db.tx.videos[videoId].delete(),
-    ]);
+    if (!user.refresh_token) {
+      alert('Missing session token. Sign in again.');
+      return;
+    }
+    try {
+      await deleteVideoRequest(videoId, user.refresh_token);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Could not delete this video.');
+    }
   }
 
   return (
@@ -96,12 +102,7 @@ export default function DashboardPage({ user }: { user: User }) {
                   </Link>
                   <button
                     className="btn btn-ghost small danger"
-                    onClick={() =>
-                      deleteVideo(
-                        v.id,
-                        v.segments.map((s) => s.id),
-                      )
-                    }
+                    onClick={() => deleteVideo(v.id)}
                   >
                     Delete
                   </button>

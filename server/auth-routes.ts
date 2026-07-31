@@ -1,4 +1,4 @@
-import type { Express, Request, Response, NextFunction } from 'express';
+import type { Express } from 'express';
 import {
   requireAdmin,
   normalizeEmail,
@@ -7,32 +7,7 @@ import {
   verifyPassword,
   id,
 } from './auth.ts';
-
-type AuthedRequest = Request & {
-  instantUser?: { id: string; email: string | null; refresh_token?: string };
-};
-
-async function requireUser(req: AuthedRequest, res: Response, next: NextFunction) {
-  try {
-    const admin = requireAdmin();
-    const header = req.headers.authorization ?? '';
-    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-    if (!token) {
-      res.status(401).json({ error: 'Not authenticated' });
-      return;
-    }
-    const user = await admin.auth.verifyToken(token);
-    if (!user) {
-      res.status(401).json({ error: 'Invalid or expired session' });
-      return;
-    }
-    req.instantUser = user as AuthedRequest['instantUser'];
-    next();
-  } catch (err) {
-    console.error('auth verify failed', err);
-    res.status(401).json({ error: 'Invalid or expired session' });
-  }
-}
+import { requireUser, type AuthedRequest } from './auth-middleware.ts';
 
 export function registerAuthRoutes(app: Express) {
   app.post('/api/auth/signup', async (req, res) => {

@@ -138,7 +138,7 @@ try {
   const health = await fetch(`${baseUrl}/api/health`);
   assert.equal(health.status, 200);
   assertContentType(health, /application\/json/);
-  assert.deepEqual(await health.json(), { ok: true, storage: 's3' });
+  assert.deepEqual(await health.json(), { ok: true, storage: 's3', analysis: 'unavailable' });
   console.log('PASS /api/health reports S3 storage');
 
   const presign = await fetch(`${baseUrl}/api/presign-upload`, {
@@ -146,21 +146,47 @@ try {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ fileName: 'smoke-test.mp4', contentType: 'video/mp4' }),
   });
-  assert.equal(presign.status, 200);
+  assert.equal(presign.status, 401);
   assertContentType(presign, /application\/json/);
-  const presignBody = await presign.json();
-  assert.match(presignBody.key, /^[a-f0-9-]{36}__smoke-test\.mp4$/);
-  assert.equal(presignBody.storage, 's3');
-  assert.match(presignBody.uploadUrl, /^https:\/\/.+\.example\.invalid\//);
-  console.log('PASS upload presign response matches web and mobile clients');
+  assert.equal((await presign.json()).error, 'Not authenticated');
+  console.log('PASS upload presign requires bearer authentication');
 
   const playback = await fetch(
-    `${baseUrl}/api/playback-url?key=${encodeURIComponent(presignBody.key)}`,
+    `${baseUrl}/api/playback-url?key=${encodeURIComponent('uploads/owner/video/file.mp4')}`,
   );
-  assert.equal(playback.status, 200);
+  assert.equal(playback.status, 401);
   assertContentType(playback, /application\/json/);
-  assert.match((await playback.json()).url, /^https:\/\/.+\.example\.invalid\//);
-  console.log('PASS playback presign uses isolated dummy storage');
+  assert.equal((await playback.json()).error, 'Not authenticated');
+  console.log('PASS playback presign requires bearer authentication');
+
+  const completion = await fetch(`${baseUrl}/api/uploads/complete`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(completion.status, 401);
+  assert.equal((await completion.json()).error, 'Not authenticated');
+  console.log('PASS upload completion requires bearer authentication');
+
+  const deletion = await fetch(
+    `${baseUrl}/api/videos/00000000-0000-4000-8000-000000000000`,
+    { method: 'DELETE' },
+  );
+  assert.equal(deletion.status, 401);
+  assert.equal((await deletion.json()).error, 'Not authenticated');
+  console.log('PASS video deletion requires bearer authentication');
+
+  const candidateReview = await fetch(
+    `${baseUrl}/api/analysis/candidates/00000000-0000-4000-8000-000000000000/review`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'reject' }),
+    },
+  );
+  assert.equal(candidateReview.status, 401);
+  assert.equal((await candidateReview.json()).error, 'Not authenticated');
+  console.log('PASS analysis candidate review requires bearer authentication');
 
   for (const route of ['/', '/settings']) {
     const response = await fetch(`${baseUrl}${route}`);

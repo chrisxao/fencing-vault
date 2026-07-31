@@ -1,12 +1,27 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { id, type User, type InstaQLEntity } from '@instantdb/react';
 import type { AppSchema } from '../../instant.schema';
 import { db } from '../lib/db';
 import { getPlaybackUrl } from '../lib/upload';
-import { categoryById, resultById, weaponName } from '../lib/labels';
+import { categoryById, resultById, resultsForWeapon, weaponName } from '../lib/labels';
 import { isScored, isReceived } from '../lib/stats';
 import { formatTime, formatDate } from '../lib/format';
+import {
+  cancelVideoAnalysis,
+  retryVideoAnalysis,
+  reviewAnalysisCandidate,
+  startVideoAnalysis,
+  type AnalysisReviewResult,
+  type CandidateReviewInput,
+} from '../lib/api';
 import SegmentEditor, { type SegmentDraft } from '../components/SegmentEditor';
 
 const FRAME = 1 / 30;
@@ -20,6 +35,10 @@ export default function VideoPage({ user }: { user: User }) {
             $: { where: { id: videoId, 'owner.id': user.id } },
             segments: { labels: {}, comments: {} },
             comments: {},
+            analysisJobs: {
+              candidates: { feedback: {}, segment: {} },
+              feedback: {},
+            },
           },
           labels: { $: { where: { 'owner.id': user.id } } },
         }
@@ -37,11 +56,21 @@ export default function VideoPage({ user }: { user: User }) {
 type VideoWithRefs = InstaQLEntity<
   AppSchema,
   'videos',
-  { segments: { labels: object; comments: object }; comments: object }
+  {
+    segments: { labels: object; comments: object };
+    comments: object;
+    analysisJobs: {
+      candidates: { feedback: object; segment: object };
+      feedback: object;
+    };
+  }
 >;
 type Segment = VideoWithRefs['segments'][number];
 type Comment = VideoWithRefs['comments'][number];
 type Label = InstaQLEntity<AppSchema, 'labels'>;
+type AnalysisJob = VideoWithRefs['analysisJobs'][number];
+type AnalysisCandidate = AnalysisJob['candidates'][number];
+type ReviewAction = CandidateReviewInput['action'];
 
 function BoutAnalyzer({
   video,
@@ -65,24 +94,36 @@ function BoutAnalyzer({
     | { mode: 'edit'; segmentId: string; draft: SegmentDraft }
     | null
   >(null);
-  const [tab, setTab] = useState<'touches' | 'frames'>('touches');
+  const [candidateReview, setCandidateReview] = useState<{
+    candidate: AnalysisCandidate;
+    action: ReviewAction;
+  } | null>(null);
+  const [pendingCandidateId, setPendingCandidateId] = useState<string | null>(null);
+  const [analysisAction, setAnalysisAction] = useState<'start' | 'retry' | 'cancel' | null>(null);
+  const [analysisError, setAnalysisError] = useState('');
+  const [analysisNotice, setAnalysisNotice] = useState('');
+  const [tab, setTab] = useState<'touches' | 'ai' | 'frames'>('touches');
   const playUntil = useRef<number | null>(null);
 
   useEffect(() => {
-    getPlaybackUrl(video.s3Key)
+    if (!user.refresh_token) {
+      setSrcError('Missing session token. Sign in again.');
+      return;
+    }
+    getPlaybackUrl(video.s3Key, user.refresh_token)
       .then(setSrc)
       .catch(() =>
         setSrcError('Could not load the video file. Is the API server running (npm run dev)?'),
       );
-  }, [video.s3Key]);
+  }, [user.refresh_token, video.s3Key]);
 
-  // Pause playback whenever the touch editor is open.
+  // Pause playback whenever an editor is open.
   useEffect(() => {
-    if (editing) {
+    if (editing || candidateReview) {
       playUntil.current = null;
       videoRef.current?.pause();
     }
-  }, [editing]);
+  }, [candidateReview, editing]);
 
   // Smooth playhead updates + auto-pause at the end of a touch being replayed.
   useEffect(() => {
@@ -113,6 +154,25 @@ function BoutAnalyzer({
         .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0)),
     [video.comments],
   );
+  const analysisJobs = useMemo(
+    () => [...video.analysisJobs].sort((a, b) => b.createdAt - a.createdAt),
+    [video.analysisJobs],
+  );
+  const latestJob = analysisJobs[0];
+  const analysisCandidates = useMemo(() => {
+    if (!latestJob) return [];
+    return latestJob.candidates
+      .filter((candidate) => !latestJob.runId || candidate.runId === latestJob.runId)
+      .sort((a, b) => a.eventTimestamp - b.eventTimestamp);
+  }, [latestJob]);
+
+  useEffect(() => {
+    if (!pendingCandidateId) return;
+    const candidate = analysisCandidates.find((item) => item.id === pendingCandidateId);
+    if (!candidate || candidate.reviewState !== 'unreviewed') {
+      setPendingCandidateId(null);
+    }
+  }, [analysisCandidates, pendingCandidateId]);
 
   const scored = segments.filter((s) => isScored(s.result)).length;
   const received = segments.filter((s) => isReceived(s.result)).length;
@@ -200,6 +260,51 @@ function BoutAnalyzer({
     await db.transact(db.tx.segments[segmentId].delete());
   }
 
+  function sessionToken() {
+    if (!user.refresh_token) {
+      throw new Error('Missing session token. Sign in again.');
+    }
+    return user.refresh_token;
+  }
+
+  async function runAnalysisAction(action: 'start' | 'retry' | 'cancel') {
+    if (analysisAction) return;
+    setAnalysisAction(action);
+    setAnalysisError('');
+    setAnalysisNotice('');
+    try {
+      const token = sessionToken();
+      if (action === 'start') {
+        const response = await startVideoAnalysis(video.id, token);
+        if (response.idempotent) {
+          setAnalysisNotice('This video is already using the current analysis.');
+        }
+      } else {
+        if (!latestJob) throw new Error('No analysis job is available.');
+        if (action === 'retry') await retryVideoAnalysis(latestJob.id, token);
+        else await cancelVideoAnalysis(latestJob.id, token);
+      }
+    } catch (value) {
+      setAnalysisError(value instanceof Error ? value.message : 'Could not update video analysis.');
+    } finally {
+      setAnalysisAction(null);
+    }
+  }
+
+  async function submitCandidateReview(
+    candidate: AnalysisCandidate,
+    input: CandidateReviewInput,
+  ) {
+    if (pendingCandidateId) throw new Error('Another review is still being saved.');
+    setPendingCandidateId(candidate.id);
+    try {
+      await reviewAnalysisCandidate(candidate.id, input, sessionToken());
+    } catch (value) {
+      setPendingCandidateId(null);
+      throw value;
+    }
+  }
+
   return (
     <div className="video-page">
       <div className="page-head">
@@ -228,6 +333,17 @@ function BoutAnalyzer({
         </div>
       </div>
 
+      <AnalysisStatusPanel
+        job={latestJob}
+        candidateCount={analysisCandidates.length}
+        action={analysisAction}
+        error={analysisError}
+        notice={analysisNotice}
+        onStart={() => runAnalysisAction('start')}
+        onRetry={() => runAnalysisAction('retry')}
+        onCancel={() => runAnalysisAction('cancel')}
+      />
+
       <div className="video-layout">
         <div className="player-column">
           {srcError ? (
@@ -255,9 +371,16 @@ function BoutAnalyzer({
             currentTime={currentTime}
             segments={segments}
             frameComments={frameComments}
+            analysisCandidates={analysisCandidates}
             markStart={markStart}
             onSeek={seek}
           />
+          {analysisCandidates.length > 0 && (
+            <div className="timeline-legend muted small">
+              <span className="timeline-legend-swatch" />
+              AI candidates from the latest analysis run
+            </div>
+          )}
 
           <div className="controls">
             <button className="btn btn-ghost" onClick={() => seek(currentTime - 5)} title="Back 5s">
@@ -330,6 +453,12 @@ function BoutAnalyzer({
               Touches ({segments.length})
             </button>
             <button
+              className={`tab ${tab === 'ai' ? 'active' : ''}`}
+              onClick={() => setTab('ai')}
+            >
+              AI review ({analysisCandidates.length})
+            </button>
+            <button
               className={`tab ${tab === 'frames' ? 'active' : ''}`}
               onClick={() => setTab('frames')}
             >
@@ -359,6 +488,15 @@ function BoutAnalyzer({
               }
               onDelete={deleteSegment}
             />
+          ) : tab === 'ai' ? (
+            <CandidateReviewList
+              candidates={analysisCandidates}
+              currentTime={currentTime}
+              pendingCandidateId={pendingCandidateId}
+              onPreview={playSegment}
+              onSeek={seek}
+              onReview={(candidate, action) => setCandidateReview({ candidate, action })}
+            />
           ) : (
             <FrameComments
               comments={frameComments}
@@ -381,6 +519,530 @@ function BoutAnalyzer({
           onClose={() => setEditing(null)}
         />
       )}
+      {candidateReview && (
+        <CandidateReviewModal
+          key={`${candidateReview.candidate.id}:${candidateReview.action}`}
+          candidate={candidateReview.candidate}
+          action={candidateReview.action}
+          weapon={video.weapon}
+          duration={duration}
+          pending={pendingCandidateId === candidateReview.candidate.id}
+          onSubmit={(input) => submitCandidateReview(candidateReview.candidate, input)}
+          onClose={() => setCandidateReview(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------- Video analysis
+
+const ACTIVE_ANALYSIS_STATUSES = new Set(['queued', 'processing', 'retrying']);
+
+function reviewStateLabel(state: string) {
+  switch (state) {
+    case 'accepted':
+      return 'Accepted';
+    case 'corrected':
+      return 'Corrected';
+    case 'rejected':
+      return 'Rejected';
+    default:
+      return 'Needs review';
+  }
+}
+
+function formatStage(stage: string) {
+  const label = stage.replaceAll('_', ' ').trim();
+  return label ? label[0].toUpperCase() + label.slice(1) : 'Queued';
+}
+
+function awardedSideLabel(side?: string) {
+  if (!side) return 'Unknown';
+  return side[0].toUpperCase() + side.slice(1);
+}
+
+function parseEvidence(value: string) {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function AnalysisStatusPanel({
+  job,
+  candidateCount,
+  action,
+  error,
+  notice,
+  onStart,
+  onRetry,
+  onCancel,
+}: {
+  job?: AnalysisJob;
+  candidateCount: number;
+  action: 'start' | 'retry' | 'cancel' | null;
+  error: string;
+  notice: string;
+  onStart: () => void;
+  onRetry: () => void;
+  onCancel: () => void;
+}) {
+  const active = Boolean(job && ACTIVE_ANALYSIS_STATUSES.has(job.status));
+  const progress = Math.max(0, Math.min(1, job?.progress ?? 0));
+  const status = job ? formatStage(job.status) : '';
+
+  return (
+    <section className="analysis-panel" aria-label="Video analysis">
+      <div className="analysis-panel-head">
+        <div>
+          <h2>AI-assisted review</h2>
+          <p className="muted small">
+            Detected touches stay separate from your statistics until you review them.
+          </p>
+        </div>
+        <div className="analysis-actions">
+          {!job || job.status === 'completed' ? (
+            <button
+              className="btn btn-primary"
+              disabled={Boolean(action)}
+              onClick={onStart}
+            >
+              {action === 'start'
+                ? 'Starting…'
+                : job?.status === 'completed'
+                  ? 'Analyze bout again'
+                  : 'Analyze bout'}
+            </button>
+          ) : null}
+          {job && active ? (
+            <button
+              className="btn btn-ghost danger"
+              disabled={Boolean(action) || job.cancelRequested}
+              onClick={onCancel}
+            >
+              {action === 'cancel' ? 'Cancelling…' : 'Cancel analysis'}
+            </button>
+          ) : null}
+          {job && (job.status === 'failed' || job.status === 'cancelled') ? (
+            <button
+              className="btn btn-primary"
+              disabled={Boolean(action)}
+              onClick={onRetry}
+            >
+              {action === 'retry' ? 'Retrying…' : 'Retry analysis'}
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {job ? (
+        <>
+          <div className="analysis-meta">
+            <span className={`analysis-status state-${job.status}`}>{status}</span>
+            <span>
+              Stage <strong>{formatStage(job.stage)}</strong>
+            </span>
+            <span>
+              Progress <strong>{Math.round(progress * 100)}%</strong>
+            </span>
+            <span>
+              Candidates <strong>{candidateCount}</strong>
+            </span>
+            {typeof job.costUsd === 'number' ? (
+              <span>
+                Cost <strong>${job.costUsd.toFixed(4)}</strong>
+              </span>
+            ) : null}
+          </div>
+          <div
+            className="analysis-progress-track"
+            role="progressbar"
+            aria-label="Analysis progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(progress * 100)}
+          >
+            <div className="analysis-progress-fill" style={{ width: `${progress * 100}%` }} />
+          </div>
+          {job.error ? <p className="analysis-error">{job.error}</p> : null}
+        </>
+      ) : (
+        <p className="muted small">
+          Run the video pipeline to detect possible phrase endings and awarded points.
+        </p>
+      )}
+      {error ? <p className="analysis-error">{error}</p> : null}
+      {notice ? <p className="analysis-notice">{notice}</p> : null}
+    </section>
+  );
+}
+
+function CandidateReviewList({
+  candidates,
+  currentTime,
+  pendingCandidateId,
+  onPreview,
+  onSeek,
+  onReview,
+}: {
+  candidates: AnalysisCandidate[];
+  currentTime: number;
+  pendingCandidateId: string | null;
+  onPreview: (start: number, end: number) => void;
+  onSeek: (time: number) => void;
+  onReview: (candidate: AnalysisCandidate, action: ReviewAction) => void;
+}) {
+  if (candidates.length === 0) {
+    return (
+      <div className="side-empty">
+        <p className="muted">
+          No candidates are available for the latest analysis run. Start analysis or wait for the
+          current run to finish.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="candidate-list">
+      {candidates.map((candidate, index) => {
+        const evidence = parseEvidence(candidate.evidenceJson);
+        const active =
+          currentTime >= candidate.eventStart && currentTime <= candidate.eventEnd;
+        const pending = pendingCandidateId === candidate.id;
+        const latestFeedback = [...candidate.feedback].sort(
+          (a, b) => b.createdAt - a.createdAt,
+        )[0];
+        return (
+          <article
+            key={candidate.id}
+            className={`candidate-card ${active ? 'active' : ''}`}
+          >
+            <div className="candidate-card-head">
+              <button
+                className="time-badge mono"
+                onClick={() => onSeek(candidate.eventTimestamp)}
+              >
+                {formatTime(candidate.eventTimestamp)}
+              </button>
+              <span className={`review-state state-${candidate.reviewState}`}>
+                {reviewStateLabel(candidate.reviewState)}
+              </span>
+              <span className="candidate-index muted">Candidate {index + 1}</span>
+            </div>
+            <div className="candidate-facts">
+              <span>
+                Confidence <strong>{Math.round(candidate.confidence * 100)}%</strong>
+              </span>
+              <span>
+                Point <strong>{candidate.pointAwarded === true ? 'Awarded' : candidate.pointAwarded === false ? 'Not awarded' : 'Unknown'}</strong>
+              </span>
+              <span>
+                Side <strong>{awardedSideLabel(candidate.awardedSide)}</strong>
+              </span>
+            </div>
+            <p className="candidate-window mono muted">
+              Window {formatTime(candidate.eventStart)}–{formatTime(candidate.eventEnd)}
+            </p>
+            {evidence.length > 0 ? (
+              <div className="candidate-evidence">
+                <span className="candidate-label">Evidence</span>
+                <ul>
+                  {evidence.map((item, itemIndex) => (
+                    <li key={`${candidate.id}:evidence:${itemIndex}`}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <p className="muted small">No model evidence was recorded.</p>
+            )}
+            <p className="candidate-model muted small">
+              {candidate.model}
+              {candidate.provider ? ` · ${candidate.provider}` : ''} · prompt{' '}
+              {candidate.promptVersion}
+            </p>
+            {candidate.segment ? (
+              <div className="candidate-linked-segment">
+                Created touch: {formatTime(candidate.segment.startTime)}–
+                {formatTime(candidate.segment.endTime)} ·{' '}
+                {resultById(candidate.segment.result)?.name ?? candidate.segment.result}
+              </div>
+            ) : null}
+            {latestFeedback?.reason || latestFeedback?.comment ? (
+              <div className="candidate-feedback">
+                {latestFeedback.reason ? <p>Notes: {latestFeedback.reason}</p> : null}
+                {latestFeedback.comment ? <p>Comment: {latestFeedback.comment}</p> : null}
+              </div>
+            ) : null}
+            <div className="candidate-actions">
+              <button
+                className="btn btn-ghost small"
+                onClick={() => onPreview(candidate.eventStart, candidate.eventEnd)}
+              >
+                Preview
+              </button>
+              {candidate.reviewState === 'unreviewed' ? (
+                <>
+                  <button
+                    className="btn btn-primary small"
+                    disabled={Boolean(pendingCandidateId)}
+                    onClick={() => onReview(candidate, 'accept')}
+                  >
+                    {pending ? 'Saving…' : 'Accept'}
+                  </button>
+                  <button
+                    className="btn btn-ghost small"
+                    disabled={Boolean(pendingCandidateId)}
+                    onClick={() => onReview(candidate, 'correct')}
+                  >
+                    Correct
+                  </button>
+                  <button
+                    className="btn btn-ghost small danger"
+                    disabled={Boolean(pendingCandidateId)}
+                    onClick={() => onReview(candidate, 'reject')}
+                  >
+                    Reject
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function CandidateReviewModal({
+  candidate,
+  action,
+  weapon,
+  duration,
+  pending,
+  onSubmit,
+  onClose,
+}: {
+  candidate: AnalysisCandidate;
+  action: ReviewAction;
+  weapon: string;
+  duration: number;
+  pending: boolean;
+  onSubmit: (input: CandidateReviewInput) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [result, setResult] = useState<AnalysisReviewResult | ''>('');
+  const [startTime, setStartTime] = useState(String(candidate.eventStart));
+  const [endTime, setEndTime] = useState(String(candidate.eventEnd));
+  const [timestamp, setTimestamp] = useState(String(candidate.eventTimestamp));
+  const [notes, setNotes] = useState('');
+  const [comment, setComment] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const resultOptions = resultsForWeapon(weapon);
+  const editingTimes = action === 'correct';
+  const rejecting = action === 'reject';
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (saving || pending) return;
+    setError('');
+    let input: CandidateReviewInput;
+    const normalizedNotes = notes.trim() || undefined;
+    const normalizedComment = comment.trim() || undefined;
+
+    if (rejecting) {
+      input = {
+        action: 'reject',
+        notes: normalizedNotes,
+        comment: normalizedComment,
+      };
+    } else {
+      if (!result) {
+        setError('Choose the fencing result relative to you.');
+        return;
+      }
+      if (editingTimes) {
+        const start = Number(startTime);
+        const end = Number(endTime);
+        const eventTime = Number(timestamp);
+        if (![start, end, eventTime].every(Number.isFinite) || start < 0) {
+          setError('Enter valid non-negative timestamps.');
+          return;
+        }
+        if (end <= start) {
+          setError('End time must be after start time.');
+          return;
+        }
+        if (eventTime < start || eventTime > end) {
+          setError('Point timestamp must fall inside the event window.');
+          return;
+        }
+        if (duration > 0 && end > duration) {
+          setError('Event timestamps cannot exceed the video duration.');
+          return;
+        }
+        input = {
+          action: 'correct',
+          startTime: start,
+          endTime: end,
+          timestamp: eventTime,
+          result,
+          notes: normalizedNotes,
+          comment: normalizedComment,
+        };
+      } else {
+        input = {
+          action: 'accept',
+          result,
+          notes: normalizedNotes,
+          comment: normalizedComment,
+        };
+      }
+    }
+
+    setSaving(true);
+    try {
+      await onSubmit(input);
+      onClose();
+    } catch (value) {
+      setError(value instanceof Error ? value.message : 'Could not save this review.');
+      setSaving(false);
+    }
+  }
+
+  const title =
+    action === 'accept'
+      ? 'Accept AI candidate'
+      : action === 'correct'
+        ? 'Correct AI candidate'
+        : 'Reject AI candidate';
+
+  return (
+    <div className="modal-backdrop" onClick={saving ? undefined : onClose}>
+      <div className="modal wide candidate-review-modal" onClick={(event) => event.stopPropagation()}>
+        <h2>{title}</h2>
+        <p className="muted small">
+          AI reported {awardedSideLabel(candidate.awardedSide).toLowerCase()} at{' '}
+          {formatTime(candidate.eventTimestamp)}. Left and right are camera positions, not your side.
+        </p>
+        <form onSubmit={submit}>
+          {editingTimes ? (
+            <div className="field-row candidate-time-fields">
+              <label className="field">
+                <span>Start (seconds)</span>
+                <input
+                  type="number"
+                  min="0"
+                  max={duration || undefined}
+                  step="0.1"
+                  value={startTime}
+                  onChange={(event) => setStartTime(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>End (seconds)</span>
+                <input
+                  type="number"
+                  min="0"
+                  max={duration || undefined}
+                  step="0.1"
+                  value={endTime}
+                  onChange={(event) => setEndTime(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Point timestamp</span>
+                <input
+                  type="number"
+                  min="0"
+                  max={duration || undefined}
+                  step="0.1"
+                  value={timestamp}
+                  onChange={(event) => setTimestamp(event.target.value)}
+                />
+              </label>
+            </div>
+          ) : !rejecting ? (
+            <div className="candidate-original-window">
+              Segment {formatTime(candidate.eventStart)}–{formatTime(candidate.eventEnd)} · point at{' '}
+              {formatTime(candidate.eventTimestamp)}
+            </div>
+          ) : null}
+
+          {!rejecting ? (
+            <div className="field">
+              <span>Result relative to you</span>
+              <div className="result-guidance">
+                Select this explicitly; the camera-side award is never converted automatically.
+              </div>
+              <div className="option-row">
+                {resultOptions.map((option) => (
+                  <button
+                    type="button"
+                    key={option.id}
+                    className={`option-pill ${result === option.id ? 'selected' : ''}`}
+                    style={
+                      result === option.id
+                        ? { borderColor: option.color, color: option.color }
+                        : undefined
+                    }
+                    onClick={() => setResult(option.id)}
+                  >
+                    {option.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          <label className="field">
+            <span>{rejecting ? 'Rejection notes' : 'Touch notes'}</span>
+            <textarea
+              rows={2}
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              placeholder={
+                rejecting
+                  ? 'Why is this not a touch?'
+                  : 'Optional notes saved on the created touch'
+              }
+            />
+          </label>
+          <label className="field">
+            <span>Reviewer comment</span>
+            <textarea
+              rows={2}
+              value={comment}
+              onChange={(event) => setComment(event.target.value)}
+              placeholder="Optional feedback about the model output"
+            />
+          </label>
+          {error ? <p className="form-error">{error}</p> : null}
+          <div className="modal-actions">
+            <button type="button" className="btn btn-ghost" disabled={saving} onClick={onClose}>
+              Cancel
+            </button>
+            <button
+              className={rejecting ? 'btn btn-ghost danger' : 'btn btn-primary'}
+              disabled={saving || pending || (!rejecting && !result)}
+            >
+              {saving || pending
+                ? 'Saving…'
+                : action === 'accept'
+                  ? 'Accept and create touch'
+                  : action === 'correct'
+                    ? 'Save correction'
+                    : 'Reject candidate'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
@@ -392,6 +1054,7 @@ function Timeline({
   currentTime,
   segments,
   frameComments,
+  analysisCandidates,
   markStart,
   onSeek,
 }: {
@@ -399,6 +1062,7 @@ function Timeline({
   currentTime: number;
   segments: Segment[];
   frameComments: Comment[];
+  analysisCandidates: AnalysisCandidate[];
   markStart: number | null;
   onSeek: (t: number) => void;
 }) {
@@ -414,6 +1078,19 @@ function Timeline({
         onSeek(((e.clientX - rect.left) / rect.width) * duration);
       }}
     >
+      {analysisCandidates.map((candidate) => (
+        <div
+          key={candidate.id}
+          className={`timeline-ai-candidate state-${candidate.reviewState}`}
+          title={`AI candidate at ${formatTime(candidate.eventTimestamp)} · ${Math.round(
+            candidate.confidence * 100,
+          )}% confidence · ${reviewStateLabel(candidate.reviewState)}`}
+          style={{
+            left: `${pct(candidate.eventStart)}%`,
+            width: `${Math.max(0.7, pct(candidate.eventEnd) - pct(candidate.eventStart))}%`,
+          }}
+        />
+      ))}
       {segments.map((s) => {
         const cat = categoryById(s.category ?? undefined);
         const res = resultById(s.result);

@@ -37,9 +37,11 @@ export default function UploadModal({ user, onClose }: { user: User; onClose: ()
     setError(null);
     setProgress(0);
     try {
-      const { key } = await uploadVideo(file, setProgress);
+      if (!user.refresh_token) throw new Error('Missing session token — sign in again');
+      const videoId = id();
+      const { key } = await uploadVideo(file, videoId, user.refresh_token, setProgress);
       await db.transact(
-        db.tx.videos[id()]
+        db.tx.videos[videoId]
           .update({
             title: title.trim() || file.name,
             weapon,

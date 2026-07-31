@@ -57,6 +57,54 @@ const rules = {
       delete: isOwner,
     },
   },
+  analysisJobs: {
+    allow: {
+      view: isOwner,
+      create: 'false',
+      update: 'false',
+      delete: 'false',
+    },
+  },
+  analysisClips: {
+    allow: {
+      view: isOwner,
+      create: 'false',
+      update: 'false',
+      delete: 'false',
+    },
+  },
+  analysisCandidates: {
+    allow: {
+      view: isOwner,
+      create: 'false',
+      update: 'false',
+      delete: 'false',
+    },
+  },
+  analysisFeedback: {
+    allow: {
+      view: isOwner,
+      create: 'false',
+      update: 'false',
+      delete: 'false',
+    },
+  },
+  ingestionSources: {
+    allow: {
+      view: isOwner,
+      create: isOwner,
+      update: isOwner,
+      delete: isOwner,
+    },
+  },
+  ingestionJobs: {
+    allow: {
+      view: isOwner,
+      create: isOwner,
+      update: isOwner,
+      delete: isOwner,
+    },
+  },
 } satisfies InstantRules;
 
 export default rules;
