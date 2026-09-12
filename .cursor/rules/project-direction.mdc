@@ -1,0 +1,13 @@
+---
+description: Keep all work focused on Sabre Studio and sabre analysis
+alwaysApply: true
+---
+
+# Project direction
+
+- Sabre Studio is the sole application; all new work targets sabre analysis.
+- Run commands from the repository root. The app no longer lives in a nested `sabre-studio/` directory.
+- Keep the React labeler, Express API, PostgreSQL migrations, FencingTV capture worker, and `ml/src/sabre_ml` aligned.
+- Preserve exact bout clipping, source timing, human label revisions, and rule references.
+- Do not restore the retired generic Fencing Vault app, Expo mobile client, InstantDB integration, or epee pipeline unless the user explicitly changes direction.
+- Validate changes with `npm test` and `npm run build`; use an isolated local API for mutation smoke tests.

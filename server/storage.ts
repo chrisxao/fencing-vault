@@ -1,103 +1,101 @@
-import {
-  DeleteObjectCommand,
-  GetObjectCommand,
-  HeadObjectCommand,
-  ListObjectsV2Command,
-  PutObjectCommand,
-  S3Client,
-  type HeadObjectCommandOutput,
-} from '@aws-sdk/client-s3';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { config } from './config.ts';
 
-function firstEnv(...names: string[]): string | undefined {
-  for (const name of names) {
-    const value = process.env[name]?.trim();
-    if (value) return value;
+let client: S3Client | null = null;
+
+export function storageConfigured() {
+  return Boolean(
+    config.s3.endpoint &&
+      config.s3.bucket &&
+      config.s3.accessKeyId &&
+      config.s3.secretAccessKey,
+  );
+}
+
+function s3() {
+  if (!storageConfigured()) throw new Error('S3-compatible storage is not configured');
+  client ??= new S3Client({
+    endpoint: config.s3.endpoint,
+    region: config.s3.region,
+    forcePathStyle: config.s3.forcePathStyle,
+    credentials: {
+      accessKeyId: config.s3.accessKeyId,
+      secretAccessKey: config.s3.secretAccessKey,
+    },
+  });
+  return client;
+}
+
+function safeFilename(value: string) {
+  const cleaned = value.normalize('NFKD').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  return (cleaned || 'video.mp4').slice(-160);
+}
+
+export async function presignVideoUpload(input: {
+  boutId: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+}) {
+  if (!Number.isFinite(input.sizeBytes) || input.sizeBytes <= 0 || input.sizeBytes > config.maxUploadBytes) {
+    throw new Error(`Video size must be between 1 byte and ${config.maxUploadBytes} bytes`);
   }
-}
-
-interface StorageConfig {
-  endpoint: string;
-  bucket: string;
-  region: string;
-  accessKeyId: string;
-  secretAccessKey: string;
-}
-
-const config: Partial<StorageConfig> = {
-  endpoint: firstEnv('AWS_ENDPOINT_URL', 'S3_ENDPOINT'),
-  bucket: firstEnv('AWS_S3_BUCKET_NAME', 'S3_BUCKET'),
-  region: firstEnv('AWS_DEFAULT_REGION', 'S3_REGION'),
-  accessKeyId: firstEnv('AWS_ACCESS_KEY_ID', 'S3_ACCESS_KEY_ID'),
-  secretAccessKey: firstEnv('AWS_SECRET_ACCESS_KEY', 'S3_SECRET_ACCESS_KEY'),
-};
-
-const required = [
-  ['endpoint', 'AWS_ENDPOINT_URL (or S3_ENDPOINT)'],
-  ['bucket', 'AWS_S3_BUCKET_NAME (or S3_BUCKET)'],
-  ['region', 'AWS_DEFAULT_REGION (or S3_REGION)'],
-  ['accessKeyId', 'AWS_ACCESS_KEY_ID (or S3_ACCESS_KEY_ID)'],
-  ['secretAccessKey', 'AWS_SECRET_ACCESS_KEY (or S3_SECRET_ACCESS_KEY)'],
-] as const satisfies ReadonlyArray<[keyof StorageConfig, string]>;
-
-const missing = required.filter(([key]) => !config[key]).map(([, label]) => label);
-if (missing.length) {
-  throw new Error(`[storage] Missing required S3 configuration: ${missing.join(', ')}`);
-}
-
-const storageConfig = config as StorageConfig;
-export const storageBucket = storageConfig.bucket;
-export const forcePathStyle = /^(1|true|yes)$/i.test(process.env.S3_FORCE_PATH_STYLE ?? '');
-export const s3 = new S3Client({
-  endpoint: storageConfig.endpoint,
-  region: storageConfig.region,
-  credentials: {
-    accessKeyId: storageConfig.accessKeyId,
-    secretAccessKey: storageConfig.secretAccessKey,
-  },
-  forcePathStyle,
-});
-
-export function putObjectUrl(
-  key: string,
-  contentType: string,
-  contentLength: number,
-  expiresIn = 900,
-) {
-  return getSignedUrl(
-    s3,
+  if (!input.contentType.startsWith('video/')) throw new Error('Only video uploads are accepted');
+  const objectKey = `source-videos/${input.boutId}/${crypto.randomUUID()}-${safeFilename(input.filename)}`;
+  const uploadUrl = await getSignedUrl(
+    s3(),
     new PutObjectCommand({
-      Bucket: storageBucket,
-      Key: key,
-      ContentType: contentType,
-      ContentLength: contentLength,
+      Bucket: config.s3.bucket,
+      Key: objectKey,
+      ContentType: input.contentType,
+      ContentLength: input.sizeBytes,
+      Metadata: { boutId: input.boutId },
     }),
-    { expiresIn },
+    { expiresIn: 15 * 60 },
   );
+  return { objectKey, uploadUrl, expiresInSeconds: 15 * 60 };
 }
 
-export function getObjectUrl(key: string, expiresIn = 900) {
+export async function presignPlayback(objectKey: string) {
   return getSignedUrl(
-    s3,
-    new GetObjectCommand({ Bucket: storageBucket, Key: key }),
-    { expiresIn },
+    s3(),
+    new GetObjectCommand({ Bucket: config.s3.bucket, Key: objectKey }),
+    { expiresIn: 60 * 60 },
   );
 }
 
-export function headObject(key: string): Promise<HeadObjectCommandOutput> {
-  return s3.send(new HeadObjectCommand({ Bucket: storageBucket, Key: key }));
-}
-
-export function deleteObject(key: string) {
-  return s3.send(new DeleteObjectCommand({ Bucket: storageBucket, Key: key }));
-}
-
-export function listObjects(prefix: string, continuationToken?: string) {
-  return s3.send(
-    new ListObjectsV2Command({
-      Bucket: storageBucket,
-      Prefix: prefix,
-      ContinuationToken: continuationToken,
-    }),
-  );
+export async function uploadVideoFile(input: {
+  boutId: string;
+  filePath: string;
+  filename?: string;
+  contentType?: string;
+  checksum?: string;
+  objectKey?: string;
+}) {
+  const stat = await fsp.stat(input.filePath);
+  if (!stat.isFile() || stat.size <= 0 || stat.size > config.maxUploadBytes) {
+    throw new Error(`Captured video size must be between 1 byte and ${config.maxUploadBytes} bytes`);
+  }
+  const filename = safeFilename(input.filename ?? path.basename(input.filePath));
+  const objectKey = input.objectKey ?? `source-videos/${input.boutId}/${crypto.randomUUID()}-${filename}`;
+  if (!objectKey.startsWith(`source-videos/${input.boutId}/`) || objectKey.includes('..')) {
+    throw new Error('Capture object key is outside the bout source-video prefix');
+  }
+  await s3().send(new PutObjectCommand({
+    Bucket: config.s3.bucket,
+    Key: objectKey,
+    Body: fs.createReadStream(input.filePath),
+    ContentType: input.contentType ?? 'video/mp4',
+    ContentLength: stat.size,
+    Metadata: {
+      boutId: input.boutId,
+      ...(input.checksum ? { sha256: input.checksum } : {}),
+    },
+  }));
+  return { objectKey, sizeBytes: stat.size, filename };
 }

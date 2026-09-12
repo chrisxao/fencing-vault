@@ -1,0 +1,54 @@
+dataset:
+  schema_version: 1
+  split: tournament_then_fencer_pair
+  folds: 5
+  minimum_review_state: reviewed
+
+video:
+  preserve_original_pts: true
+  working_fps: 60
+  proxy_height: 720
+
+boundaries:
+  architecture: videomae-v2-temporal-head
+  context_seconds: 8
+  labels: [play, halt, phrase_start, phrase_end, no_touch_halt]
+
+geometry:
+  detector: sam2.1
+  pose: rtmpose
+  tracker: cotracker3
+  weapon_head: custom-keypoint-detector
+  piste_homography: manual_then_learned
+
+footwork:
+  baseline: bifencenet-style-tcn
+  mode: hierarchical_multilabel
+  input_keypoints:
+    [weapon_wrist, weapon_elbow, weapon_shoulder, front_hip, rear_hip, front_knee, rear_knee, front_ankle, rear_ankle]
+  input_channels: [x, y, dx, dy, speed, pose_confidence]
+  normalization: piste_direction_and_body_scale
+  coarse_targets: [advance, retreat, lunge, jump_forward, check_step]
+  modifiers: [rapid, incremental_speed, waiting, jumping_sliding]
+  offline_bidirectional: true
+  online_causal: true
+  reference: FenceNet_CVPRW_2022
+
+actions:
+  backbone: videomae-v2
+  fuse_skeleton_tcn_features: true
+  use_geometry_features: true
+  predict_uncertainty_intervals: true
+  labels_from: action_definitions
+
+calling:
+  engine: deterministic-priority-event-graph
+  ruleset_id: sabre-rules-2026-08-fie__2025-11-usaf
+  minimum_confidence: 0.9
+  abstain_on_ordering_overlap: true
+  human_review_required: true
+
+quality_gates:
+  phrase_boundary_f1: 0.95
+  left_right_track_accuracy: 0.90
+  median_event_error_frames: 2

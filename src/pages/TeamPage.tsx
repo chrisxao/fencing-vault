@@ -1,0 +1,19 @@
+import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { Link, useParams } from 'react-router-dom';
+import type { DashboardData, TeamStats } from '../../shared/api.ts';
+import { api } from '../api.ts';
+import { ErrorNotice, Spinner, Toast } from '../components/Feedback.tsx';
+import { PageHeader } from '../components/Layout.tsx';
+
+export function TeamPage() {
+  const { teamId = '' } = useParams(); const [stats, setStats] = useState<TeamStats | null>(null); const [dashboard, setDashboard] = useState<DashboardData | null>(null); const [error, setError] = useState<unknown>(); const [toast, setToast] = useState('');
+  const load = async () => { try { const [nextStats, nextDashboard] = await Promise.all([api.teamStats(teamId), api.dashboard()]); setStats(nextStats); setDashboard(nextDashboard); } catch (caught) { setError(caught); } };
+  useEffect(() => { void load(); }, [teamId]);
+  const available = useMemo(() => dashboard?.fencers.filter((fencer) => !stats?.members.some((member) => member.fencer.id === fencer.id)) ?? [], [dashboard, stats]);
+  async function add(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const fencerId = String(new FormData(event.currentTarget).get('fencerId') || ''); if (!fencerId) return; try { await api.addTeamMember(teamId, fencerId); setToast('Fencer added to team'); setTimeout(() => setToast(''), 2400); void load(); } catch (caught) { setError(caught); } }
+  if (error) return <div className="page"><ErrorNotice error={error} /></div>; if (!stats || !dashboard) return <Spinner label="Building team profile" />;
+  return <div className="page">{toast && <Toast message={toast} />}<PageHeader eyebrow={`${stats.team.kind.toUpperCase()} · ${stats.team.countryCode || 'NO COUNTRY CODE'}`} title={stats.team.name} actions={available.length ? <form className="add-member" onSubmit={add}><select name="fencerId" aria-label="Fencer to add" defaultValue=""><option value="" disabled>Add a fencer…</option>{available.map((fencer) => <option key={fencer.id} value={fencer.id}>{fencer.fullName}</option>)}</select><button className="primary-button">Add</button></form> : undefined}><p>Combined performance for every active team member in the video library.</p></PageHeader>
+    <section className="metric-grid"><article className="metric-card accent"><div><span>MEMBERS</span><strong>{stats.totals.members}</strong></div><p>{stats.totals.uniqueBouts} unique labeled bouts</p></article><article className="metric-card"><div><span>TOUCHES SCORED</span><strong>{stats.totals.touchesScored}</strong></div><p>Combined member total</p></article><article className="metric-card"><div><span>ATTACK SCORES</span><strong>{stats.totals.attackScores}</strong></div><p>From labeled attack events</p></article><article className="metric-card"><div><span>DEFENSE SCORES</span><strong>{stats.totals.defenseScores}</strong></div><p>{stats.totals.noTouch} no-touch observations</p></article></section>
+    <section className="section-block compact"><div className="section-heading"><div><p className="eyebrow">ROSTER</p><h2>Member performance</h2></div></div><div className="team-member-grid">{stats.members.map((member) => <Link to={`/fencers/${member.fencer.id}`} key={member.fencer.id}><span className="avatar">{member.fencer.fullName.split(' ').map((part) => part[0]).slice(0,2).join('')}</span><div><strong>{member.fencer.fullName}</strong><small>{member.fencer.countryCode} · {member.totals.bouts} bouts · {member.totals.reviewedPhrases} reviewed phrases</small></div><dl><div><dt>Scored</dt><dd>{member.totals.touchesScored}</dd></div><div><dt>Received</dt><dd>{member.totals.touchesReceived}</dd></div><div><dt>Rate</dt><dd>{member.totals.scoringRate === null ? '—' : `${Math.round(member.totals.scoringRate * 100)}%`}</dd></div></dl><i>→</i></Link>)}</div></section>
+  </div>;
+}

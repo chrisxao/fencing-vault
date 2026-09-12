@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: sabre_studio
+      POSTGRES_USER: sabre
+      POSTGRES_PASSWORD: sabre
+    ports:
+      - "5432:5432"
+    volumes:
+      - sabre-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sabre -d sabre_studio"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - sabre-minio:/data
+
+volumes:
+  sabre-postgres:
+  sabre-minio:
