@@ -1,3 +1,4 @@
+import type { TrackingRun } from '../shared/tracking.ts';
 import crypto from 'node:crypto';
 import type { Pool, PoolClient, QueryResultRow } from 'pg';
 import type {
@@ -81,6 +82,9 @@ export interface Repository {
   createEvent(phraseId: string, input: PhraseEventInput): Promise<PhraseEventRecord>;
   updateEvent(id: string, input: PhraseEventInput): Promise<PhraseEventRecord | null>;
   deleteEvent(id: string): Promise<boolean>;
+  putTrackingRun(run: TrackingRun): Promise<void>;
+  getTrackingRun(id: string): Promise<TrackingRun | null>;
+  listTrackingRuns(boutId: string): Promise<TrackingRun[]>;
   upsertPose(boutId: string, input: PoseKeyframeInput): Promise<PoseKeyframeRecord>;
   importFencingTv(input: FencingTvImportInput): Promise<{ bout: BoutDetail; jobId: string; deduplicated: boolean }>;
   getIngestionJob(boutId: string): Promise<IngestionJobRecord | null>;
@@ -190,6 +194,7 @@ function poseFromRow(row: QueryResultRow): PoseKeyframeRecord {
     frameNumber: row.frame_number === null ? null : Number(row.frame_number),
     side: row.side,
     trackId: String(row.track_id),
+    provenance: row.provenance ?? null,
     keypoints: row.keypoints,
     weapon: row.weapon,
     bbox: row.bbox,
@@ -260,6 +265,10 @@ class MemoryRepository implements Repository {
   private teams = clone(demoTeams);
   private bouts = new Map<string, BoutDetail>([[demoBout.id, clone(demoBout)]]);
   private actions = clone(DEFAULT_ACTIONS);
+  private trackingRuns = new Map<string, TrackingRun>();
+  async putTrackingRun(run: TrackingRun) { this.trackingRuns.set(run.id, clone(run)); }
+  async getTrackingRun(id: string) { return clone(this.trackingRuns.get(id) ?? null); }
+  async listTrackingRuns(boutId: string) { return [...this.trackingRuns.values()].filter(r => r.boutId === boutId).map(({ result: _result, ...run }) => clone(run)).reverse(); }
   private importJobs = new Map<string, IngestionJobRecord>();
   private memberships = new Map<string, Set<string>>([
     [demoTeams[0].id, new Set([demoFencers[0].id])],
@@ -437,7 +446,7 @@ class MemoryRepository implements Repository {
   async upsertPose(boutId: string, input: PoseKeyframeInput) {
     const bout = this.bouts.get(boutId);
     if (!bout) throw new Error('Bout not found');
-    const existing = bout.poses.find((item) => item.frameNumber === input.frameNumber && item.side === input.side && item.trackId === input.trackId);
+    const existing = bout.poses.find((item) => item.timestampMs === input.timestampMs && item.side === input.side && item.trackId === input.trackId);
     if (existing) {
       Object.assign(existing, input);
       return clone(existing);
@@ -866,18 +875,37 @@ class PostgresRepository implements Repository {
     return true;
   }
 
+  async putTrackingRun(run: TrackingRun) {
+    await this.pool.query('INSERT INTO pose_tracking_runs(id,bout_id,payload) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET payload=EXCLUDED.payload', [run.id, run.boutId, JSON.stringify(run)]);
+  }
+  async getTrackingRun(id: string): Promise<TrackingRun | null> {
+    const result = await this.pool.query('SELECT payload FROM pose_tracking_runs WHERE id=$1', [id]);
+    return result.rows[0]?.payload ?? null;
+  }
+  async listTrackingRuns(boutId: string): Promise<TrackingRun[]> {
+    const result = await this.pool.query("SELECT payload - 'result' AS payload FROM pose_tracking_runs WHERE bout_id=$1 ORDER BY created_at DESC LIMIT 100", [boutId]);
+    return result.rows.map(r => r.payload);
+  }
+
   async upsertPose(boutId: string, input: PoseKeyframeInput) {
-    const id = crypto.randomUUID();
-    const result = await this.pool.query(`INSERT INTO pose_keyframes
-      (id,bout_id,timestamp_ms,frame_number,side,track_id,keypoints,weapon,bbox,front_foot_meters,rear_foot_meters,opponent_distance_meters,occluded,source)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-      ON CONFLICT (bout_id,frame_number,side,track_id) DO UPDATE SET timestamp_ms=EXCLUDED.timestamp_ms,
-        keypoints=EXCLUDED.keypoints,weapon=EXCLUDED.weapon,bbox=EXCLUDED.bbox,front_foot_meters=EXCLUDED.front_foot_meters,
-        rear_foot_meters=EXCLUDED.rear_foot_meters,opponent_distance_meters=EXCLUDED.opponent_distance_meters,
-        occluded=EXCLUDED.occluded,source=EXCLUDED.source,updated_at=now() RETURNING *`,
-    [id, boutId, input.timestampMs, input.frameNumber, input.side, input.trackId, JSON.stringify(input.keypoints), JSON.stringify(input.weapon), input.bbox ? JSON.stringify(input.bbox) : null,
-      input.frontFootMeters, input.rearFootMeters, input.opponentDistanceMeters, input.occluded, input.source]);
-    return poseFromRow(result.rows[0]);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [boutId]);
+      const existing = await client.query('SELECT id FROM pose_keyframes WHERE bout_id=$1 AND timestamp_ms=$2 AND side=$3 AND track_id=$4 ORDER BY updated_at DESC LIMIT 1', [boutId, input.timestampMs, input.side, input.trackId]);
+      const id = existing.rows[0]?.id ?? crypto.randomUUID();
+      const result = await client.query(`INSERT INTO pose_keyframes
+        (id,bout_id,timestamp_ms,frame_number,side,track_id,keypoints,weapon,bbox,front_foot_meters,rear_foot_meters,opponent_distance_meters,occluded,source,provenance)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        ON CONFLICT (id) DO UPDATE SET keypoints=EXCLUDED.keypoints,weapon=EXCLUDED.weapon,bbox=EXCLUDED.bbox,
+          front_foot_meters=EXCLUDED.front_foot_meters,rear_foot_meters=EXCLUDED.rear_foot_meters,
+          opponent_distance_meters=EXCLUDED.opponent_distance_meters,occluded=EXCLUDED.occluded,
+          source=EXCLUDED.source,provenance=EXCLUDED.provenance,updated_at=now() RETURNING *`,
+        [id, boutId, input.timestampMs, input.frameNumber, input.side, input.trackId, JSON.stringify(input.keypoints), JSON.stringify(input.weapon), input.bbox ? JSON.stringify(input.bbox) : null, input.frontFootMeters, input.rearFootMeters, input.opponentDistanceMeters, input.occluded, input.source, JSON.stringify(input.provenance ?? null)]);
+      await client.query('COMMIT');
+      return poseFromRow(result.rows[0]);
+    } catch (error) { await client.query('ROLLBACK'); throw error; }
+    finally { client.release(); }
   }
 
   async importFencingTv(input: FencingTvImportInput) {

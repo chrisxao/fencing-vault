@@ -17,7 +17,8 @@
     "capture:fencingtv": "node --experimental-strip-types scripts/capture-fencingtv.ts",
     "smoke:api": "node --experimental-strip-types scripts/smoke-api.ts",
     "rules:index": "node --experimental-strip-types scripts/index-rulebooks.ts",
-    "rules:check": "node --experimental-strip-types scripts/check-rule-sources.ts"
+    "rules:check": "node --experimental-strip-types scripts/check-rule-sources.ts",
+    "smoke:pose": "node --experimental-strip-types scripts/smoke-pose.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1095.0",

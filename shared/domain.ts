@@ -122,6 +122,7 @@ export const keypointSchema = z.object({
 });
 
 export const poseKeyframeInputSchema = z.object({
+  provenance: z.object({ mediaId: z.string().uuid(), runId: z.string().uuid().nullable(), model: z.string().max(200).nullable(), sourceSha256: z.string().max(64).nullable() }).nullable().optional(),
   timestampMs: z.number().int().nonnegative(),
   frameNumber: z.number().int().nonnegative().nullable().default(null),
   side: sideSchema,

@@ -5,6 +5,7 @@ import { Pool } from 'pg';
 import { config } from './config.ts';
 
 const migrations = [
+  // Add migrations in order below.
   {
     version: '001_initial',
     url: new URL('../db/migrations/001_initial.sql', import.meta.url),
@@ -13,6 +14,7 @@ const migrations = [
     version: '002_capture_worker',
     url: new URL('../db/migrations/002_capture_worker.sql', import.meta.url),
   },
+  { version: '003_pose_tracking', url: new URL('../db/migrations/003_pose_tracking.sql', import.meta.url) },
 ];
 
 export function createPool() {

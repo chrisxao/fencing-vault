@@ -1,3 +1,5 @@
+import { PoseManager, poseAvailable, demoVideo, withDemoVideo } from './pose/manager.ts';
+import { trackingInputSchema } from '../shared/tracking.ts';
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,6 +27,7 @@ validateProductionConfig();
 
 const app = express();
 const repository = createRepository();
+const poseManager = new PoseManager(repository);
 const idSchema = z.string().uuid();
 const actionInputSchema = actionDefinitionSchema.omit({ id: true, system: true }).extend({
   key: z.string().trim().min(1).max(80).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'Use a lowercase kebab-case key'),
@@ -75,6 +78,7 @@ app.use('/api', requireAuth);
 
 app.get('/api/config', (_req, res) => {
   res.json({
+    poseTrackingAvailable: poseAvailable(),
     demoMode: repository.demoMode,
     storageConfigured: storageConfigured(),
     fencingTvDiscoveryEnabled: config.fencingTvDiscoveryEnabled,
@@ -96,7 +100,30 @@ app.get('/api/bouts/:id', asyncRoute(async (req, res) => {
   } else if (bout.media) {
     bout.media.playbackUrl = bout.media.externalUrl;
   }
-  res.json(bout);
+  res.json(await withDemoVideo(bout, repository.demoMode));
+}));
+
+app.get('/api/pose-demo/video', (_req, res) => {
+  if (!repository.demoMode || !demoVideo) { res.sendStatus(404); return; }
+  res.sendFile(demoVideo, { dotfiles: 'allow' });
+});
+app.get('/api/bouts/:id/tracking', asyncRoute(async (req, res) => {
+  res.json(await repository.listTrackingRuns(idSchema.parse(req.params.id)));
+}));
+app.post('/api/bouts/:id/tracking', asyncRoute(async (req, res) => {
+  const bout = await repository.getBout(idSchema.parse(req.params.id));
+  if (!bout) { res.sendStatus(404); return; }
+  res.status(202).json(await poseManager.start(await withDemoVideo(bout, repository.demoMode), trackingInputSchema.parse(req.body)));
+}));
+app.get('/api/tracking/:id', asyncRoute(async (req, res) => {
+  const run = await poseManager.get(idSchema.parse(req.params.id));
+  if (!run) { res.sendStatus(404); return; }
+  res.json(run);
+}));
+app.post('/api/tracking/:id/cancel', asyncRoute(async (req, res) => {
+  const run = await poseManager.cancel(idSchema.parse(req.params.id));
+  if (!run) { res.sendStatus(404); return; }
+  res.json(run);
 }));
 
 app.get('/api/bouts/:id/ingestion', asyncRoute(async (req, res) => {
@@ -177,7 +204,16 @@ app.delete('/api/events/:id', asyncRoute(async (req, res) => {
 }));
 
 app.put('/api/bouts/:id/poses', asyncRoute(async (req, res) => {
-  res.json(await repository.upsertPose(idSchema.parse(req.params.id), poseKeyframeInputSchema.parse(req.body)));
+  const boutId = idSchema.parse(req.params.id), input = poseKeyframeInputSchema.parse(req.body);
+  const stored = await repository.getBout(boutId);
+  if (!stored) { res.sendStatus(404); return; }
+  const bout = await withDemoVideo(stored, repository.demoMode);
+  if (input.provenance && input.provenance.mediaId !== bout.media?.id) { res.status(409).json({ error: 'The source video changed. Reopen it before saving this correction.' }); return; }
+  if (input.provenance?.runId) {
+    const run = await repository.getTrackingRun(input.provenance.runId);
+    if (!run || run.boutId !== boutId || run.mediaId !== bout.media?.id || run.state !== 'ready' || input.provenance.sourceSha256 !== run.result?.sourceSha256) { res.status(409).json({ error: 'This correction no longer matches its tracking source.' }); return; }
+  }
+  res.json(await repository.upsertPose(boutId, input));
 }));
 
 app.get('/api/rules', asyncRoute(async (req, res) => {
@@ -243,7 +279,9 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const message = error instanceof Error ? error.message : 'Unexpected server error';
   const conflict = /already exists|duplicate key|unique constraint/i.test(message);
   console.error(error);
-  res.status(conflict ? 409 : 500).json({ error: message, code: conflict ? 'CONFLICT' : 'SERVER_ERROR' });
+  const requestedStatus = typeof error === 'object' && error && 'status' in error ? Number(error.status) : 0;
+  const status = [400, 404, 409, 413].includes(requestedStatus) ? requestedStatus : conflict ? 409 : 500;
+  res.status(status).json({ error: message, code: status === 409 ? 'CONFLICT' : 'SERVER_ERROR' });
 });
 
 let server: ReturnType<typeof app.listen> | null = null;
@@ -262,6 +300,7 @@ async function start() {
 async function shutdown(signal: string) {
   console.log(`${signal}: closing Sabre Studio`);
   await new Promise<void>((resolve) => server?.close(() => resolve()) ?? resolve());
+  await poseManager.close();
   await repository.close();
   process.exit(0);
 }
