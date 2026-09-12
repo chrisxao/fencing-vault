@@ -1,3 +1,4 @@
+import type { TrackingInput, TrackingRun } from '../shared/tracking.ts';
 import type { BoutDetail, DashboardData, FencerStats, IngestionJobRecord, TeamStats } from '../shared/api.ts';
 import type { ActionDefinition, PhraseEventInput, PhraseInput, PoseKeyframeInput } from '../shared/domain.ts';
 import type { RuleCard, RuleSource } from '../shared/rules.ts';
@@ -28,6 +29,7 @@ export const api = {
   login: (password: string) => request<{ authenticated: boolean }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ password }) }),
   logout: () => request<{ authenticated: boolean }>('/api/auth/logout', { method: 'POST' }),
   config: () => request<{
+    poseTrackingAvailable: boolean;
     demoMode: boolean;
     storageConfigured: boolean;
     fencingTvDiscoveryEnabled: boolean;
@@ -50,6 +52,10 @@ export const api = {
   createEvent: (phraseId: string, input: PhraseEventInput) => request(`/api/phrases/${phraseId}/events`, { method: 'POST', body: JSON.stringify(input) }),
   updateEvent: (id: string, input: PhraseEventInput) => request(`/api/events/${id}`, { method: 'PUT', body: JSON.stringify(input) }),
   deleteEvent: (id: string) => request<void>(`/api/events/${id}`, { method: 'DELETE' }),
+  trackingRuns: (boutId: string) => request<TrackingRun[]>(`/api/bouts/${boutId}/tracking`),
+  trackingRun: (id: string) => request<TrackingRun>(`/api/tracking/${id}`),
+  startTracking: (boutId: string, input: TrackingInput) => request<TrackingRun>(`/api/bouts/${boutId}/tracking`, { method: 'POST', body: JSON.stringify(input) }),
+  cancelTracking: (id: string) => request<TrackingRun>(`/api/tracking/${id}/cancel`, { method: 'POST' }),
   savePose: (boutId: string, input: PoseKeyframeInput) => request(`/api/bouts/${boutId}/poses`, { method: 'PUT', body: JSON.stringify(input) }),
   createAction: (input: unknown) => request<ActionDefinition>('/api/actions', { method: 'POST', body: JSON.stringify(input) }),
   updateAction: (id: string, input: unknown) => request<ActionDefinition>(`/api/actions/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
@@ -74,7 +80,7 @@ export function formatTime(ms: number, precise = true) {
   const totalSeconds = Math.max(0, ms) / 1_000;
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = Math.floor(totalSeconds % 60);
-  const fraction = precise ? `.${Math.floor((totalSeconds % 1) * 10)}` : '';
+  const fraction = precise ? `.${Math.floor(Math.max(0, ms) / 100) % 10}` : '';
   return `${minutes}:${seconds.toString().padStart(2, '0')}${fraction}`;
 }
 

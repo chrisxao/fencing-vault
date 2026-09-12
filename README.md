@@ -85,3 +85,7 @@ The fallback command uses FFmpeg to accurately trim and normalize the submitted 
 - `docs/railway-deployment.md` — Railway web, PostgreSQL, and Bucket setup
 
 Official rule sources are the [FIE Rules portal](https://fie.org/documents/rules), [FIE Technical Rules (August 2026)](https://static.fie.org/uploads/40/204138-Technical%20rules%20August%202026%20ang.pdf), [USA Fencing Rules for Competition (November 2025)](https://assets.contentstack.io/v3/assets/blteb7d012fc7ebef7f/blt0f86b976c72458f2/690baa8337acae1b6b5ac0d3/2025-11_USA_Fencing_Rules.pdf), and [USA Fencing referee guidance](https://www.usafencing.org/Referee-faq-and-guidelines).
+
+## Video skeleton tracking
+
+Pretrained RTMPose tracking, direct video corrections, camera compensation, and the optional CPU runtime are described in [docs/pose-tracking.md](docs/pose-tracking.md). Automatic detections remain separate from human training labels.

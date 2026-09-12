@@ -1,0 +1,22 @@
+# Optional single-instance API with CPU pose inference. The regular web image stays small.
+FROM node:22-bookworm-slim AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build && npm prune --omit=dev
+
+FROM node:22-bookworm-slim
+ENV NODE_ENV=production POSE_PYTHON=/opt/pose/bin/python POSE_MODELS_DIR=/app/.local/pose-models
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ffmpeg libgl1 libglib2.0-0 && rm -rf /var/lib/apt/lists/*
+COPY ml/pose ./ml/pose
+RUN python3 -m venv /opt/pose && /opt/pose/bin/pip install --no-cache-dir -r ml/pose/requirements.txt && /opt/pose/bin/python ml/pose/setup.py
+COPY --from=build /app/package.json /app/package-lock.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/server ./server
+COPY --from=build /app/shared ./shared
+COPY --from=build /app/db ./db
+EXPOSE 8790
+CMD ["node", "--experimental-strip-types", "server/index.ts"]
